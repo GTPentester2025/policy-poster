@@ -62,6 +62,7 @@ def build_poster_pipeline(
     contract: TemplateContract,
     llm: LLMClient,
     work_dir: str,
+    feedback=None,  # FeedbackStore | None — promoted exemplars shape generation
 ) -> list[Node]:
     token = str(uuid.uuid4())
     runtime: dict = {"retrieved": [], "content": None}
@@ -94,9 +95,13 @@ def build_poster_pipeline(
         })
 
     def generate_fn(ctx):
+        exemplar_block = (
+            feedback.exemplar_prompt_block(angle) if feedback is not None else None
+        )
         content, violations = generate_content(
             angle, contract, _retrieved(ctx), llm,
             corrective=ctx.corrective,
+            exemplar_block=exemplar_block,
         )
         if content is None:
             return NodeResult(
@@ -194,10 +199,11 @@ def run_poster_pipeline(
     work_dir: str,
     resume_from: str | None = None,
     state_overrides: dict | None = None,
+    feedback=None,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
-        contract=contract, llm=llm, work_dir=work_dir,
+        contract=contract, llm=llm, work_dir=work_dir, feedback=feedback,
     )
     orchestrator = Orchestrator(
         nodes=nodes,

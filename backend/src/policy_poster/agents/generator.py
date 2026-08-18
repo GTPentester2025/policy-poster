@@ -31,7 +31,8 @@ Respond with JSON only:
 
 
 def _build_prompt(angle: str, contract: TemplateContract, chunks: list[Chunk],
-                  corrective: str | None) -> tuple[str, str]:
+                  corrective: str | None,
+                  exemplar_block: str | None = None) -> tuple[str, str]:
     system = _SYSTEM_TEMPLATE.format(
         eyebrow=contract.budget("eyebrow"),
         headline=contract.budget("headline"),
@@ -50,6 +51,8 @@ def _build_prompt(angle: str, contract: TemplateContract, chunks: list[Chunk],
         f"Policy excerpts (cite these clause_ids only):\n{excerpts}\n\n"
         "Write the poster content JSON."
     )
+    if exemplar_block:
+        system += f"\n\n{exemplar_block}"
     if corrective:
         user += f"\n\nCORRECTIVE INSTRUCTION FROM SUPERVISOR:\n{corrective}"
     return system, user
@@ -62,9 +65,10 @@ def generate_content(
     llm: LLMClient,
     poster_id: str | None = None,
     corrective: str | None = None,
+    exemplar_block: str | None = None,
 ) -> tuple[PosterContent | None, list[str]]:
     """Returns (content, []) on success or (None, violations) for a retry edge."""
-    system, user = _build_prompt(angle, contract, retrieved, corrective)
+    system, user = _build_prompt(angle, contract, retrieved, corrective, exemplar_block)
     raw = llm.complete(system, user, max_tokens=4096)
     data = extract_json(raw)
     if data is None:

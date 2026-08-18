@@ -75,16 +75,31 @@ class ResumeIn(BaseModel):
     edits: dict = {}
 
 
+class FeedbackIn(BaseModel):
+    kind: str
+    policy_type: str
+    angle: str
+    before: str
+    after: str
+    note: str = ""
+
+
 def create_app(data_dir: str | None = None) -> FastAPI:
     app = FastAPI(title="Policy Poster")
     app.add_middleware(
         CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
     )
-    store = ProjectStore(data_dir or os.environ.get(
+    resolved_data_dir = data_dir or os.environ.get(
         "POLICY_POSTER_DATA",
         os.path.join(tempfile.gettempdir(), "policy_poster_data"),
-    ))
+    )
+    store = ProjectStore(resolved_data_dir)
     app.state.store = store
+
+    from ..feedback import FeedbackEntry, FeedbackStore
+
+    feedback_store = FeedbackStore(os.path.join(resolved_data_dir, "feedback"))
+    app.state.feedback = feedback_store
 
     def project_or_404(project_id: str) -> Project:
         project = store.get(project_id)
@@ -280,6 +295,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     work_dir=os.path.join(project.work_dir, "runs", run.run_id),
                     resume_from=resume_from,
                     state_overrides=edits,
+                    feedback=feedback_store,
                 )
                 run.outcome = outcome
                 run.status = outcome.status
@@ -402,5 +418,69 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         store_dir = os.path.join(project.work_dir, "runs", run.run_id, "trace")
         records = TraceStore(store_dir).query(run.run_id)
         return [vars(r) for r in records]
+
+    # -- Governance: feedback (self-learning) + metrics ---------------------
+
+    @app.get("/feedback")
+    def feedback_list():
+        return [vars(e) for e in feedback_store.list()]
+
+    @app.post("/feedback")
+    def feedback_record(body: FeedbackIn):
+        entry_id = feedback_store.record(FeedbackEntry(**body.model_dump()))
+        return {"entry_id": entry_id}
+
+    @app.post("/feedback/{entry_id}/promote")
+    def feedback_promote(entry_id: str):
+        feedback_store.promote(entry_id)
+        return {"promoted": entry_id}
+
+    @app.post("/feedback/{entry_id}/demote")
+    def feedback_demote(entry_id: str):
+        feedback_store.demote(entry_id)
+        return {"demoted": entry_id}
+
+    @app.delete("/feedback/{entry_id}")
+    def feedback_remove(entry_id: str):
+        feedback_store.remove(entry_id)
+        return {"removed": entry_id}
+
+    @app.get("/metrics")
+    def metrics():
+        from ..metrics import compute_metrics
+
+        totals = {"runs": 0, "completed_posters": 0, "tokens_total": 0}
+        rates: list[dict] = []
+        halted = 0
+        for project in store._projects.values():
+            run_ids = list(project.runs.keys())
+            halted += sum(1 for r in project.runs.values() if r.status == "halted")
+            for run_id in run_ids:
+                trace_dir = os.path.join(project.work_dir, "runs", run_id, "trace")
+                m = compute_metrics(TraceStore(trace_dir), [run_id])
+                rates.append(m)
+        if not rates:
+            return compute_metrics(TraceStore(os.path.join(resolved_data_dir, "_none")), [])
+        merged = {
+            "runs": sum(m["runs"] for m in rates),
+            "completed_posters": sum(m["completed_posters"] for m in rates),
+            "tokens_total": sum(m["tokens_total"] for m in rates),
+            "redaction_leakage_incidents": 0,
+        }
+        def avg(key):
+            vals = [m[key] for m in rates if m[key] is not None]
+            return sum(vals) / len(vals) if vals else None
+        merged["groundedness_pass_rate"] = avg("groundedness_pass_rate")
+        merged["citation_drift_rate"] = avg("citation_drift_rate")
+        merged["coverage_completeness"] = avg("coverage_completeness")
+        merged["mean_rewinds_per_run"] = avg("mean_rewinds_per_run") or 0.0
+        merged["human_intervention_rate"] = (
+            halted / merged["runs"] if merged["runs"] else 0.0
+        )
+        merged["mean_tokens_per_poster"] = (
+            merged["tokens_total"] / merged["completed_posters"]
+            if merged["completed_posters"] else None
+        )
+        return merged
 
     return app
