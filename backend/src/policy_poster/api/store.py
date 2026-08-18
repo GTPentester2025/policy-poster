@@ -49,6 +49,53 @@ class ProjectStore:
         self._data_dir = data_dir
         self._projects: dict[str, Project] = {}
         os.makedirs(data_dir, exist_ok=True)
+        from .persist import Persistence
+
+        self.persistence = Persistence(data_dir)
+        self._restore()
+
+    def _restore(self) -> None:
+        """Rebuild projects + finished runs from SQLite after a restart."""
+        import json
+
+        from ..docx_parser import parse_docx
+        from ..orchestrator import RunOutcome
+        from ..pdf_parser import parse_pdf
+
+        for row in self.persistence.load_all():
+            try:
+                project = Project(project_id=row["project_id"],
+                                  work_dir=row["work_dir"])
+                source = row.get("source_path")
+                if source and os.path.exists(source):
+                    project.doc = (parse_docx(source) if source.endswith(".docx")
+                                   else parse_pdf(source))
+                for term in json.loads(row.get("terms") or "[]"):
+                    project.ledger.add(term["term"], term["category"])
+                project.acknowledged = set(json.loads(row.get("acknowledged") or "[]"))
+                project.dismissed_suggestions = set(
+                    json.loads(row.get("dismissed") or "[]"))
+                project.embedding_source = row.get("embedding_source") or ""
+                for run_row in row.get("runs", []):
+                    run = Run(run_id=run_row["run_id"], angle=run_row["angle"],
+                              template_family=run_row["template_family"],
+                              status=run_row["status"] or "error",
+                              error=run_row.get("error"))
+                    if run.status == "running":  # interrupted by the restart
+                        run.status = "error"
+                        run.error = "server restarted mid-run — resume from any step"
+                    if run_row.get("state"):
+                        try:
+                            run.outcome = RunOutcome(
+                                status=run.status,
+                                state=json.loads(run_row["state"]),
+                            )
+                        except Exception:
+                            run.outcome = None
+                    project.runs[run.run_id] = run
+                self._projects[project.project_id] = project
+            except Exception:
+                continue  # a corrupt row must not block startup
 
     def create(self) -> Project:
         project_id = str(uuid.uuid4())
@@ -57,6 +104,12 @@ class ProjectStore:
         project = Project(project_id=project_id, work_dir=work_dir)
         self._projects[project_id] = project
         return project
+
+    def save(self, project: Project) -> None:
+        self.persistence.save_project(project)
+
+    def save_run(self, project: Project, run: Run) -> None:
+        self.persistence.save_run(project.project_id, run)
 
     def get(self, project_id: str) -> Project | None:
         return self._projects.get(project_id)

@@ -147,6 +147,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         with open(path, "wb") as f:
             f.write(await file.read())
         project.doc = parse_docx(path) if suffix == ".docx" else parse_pdf(path)
+        store.save(project)
         return {
             "project_id": project.project_id,
             "filename": file.filename,
@@ -176,6 +177,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         project.chunks, project.index = [], None  # ledger changed → re-index required
+        store.save(project)
         return {"placeholder": entry.placeholder}
 
     @app.post("/projects/{project_id}/terms/preview")
@@ -194,6 +196,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         project = project_or_404(project_id)
         project.ledger.remove(placeholder)
         project.chunks, project.index = [], None
+        store.save(project)
         return {"removed": placeholder}
 
     @app.get("/projects/{project_id}/suggestions")
@@ -212,6 +215,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def dismiss_suggestion(project_id: str, body: AcknowledgeIn):
         project = project_or_404(project_id)
         project.dismissed_suggestions.update(body.surfaces)
+        store.save(project)
         return {"dismissed": sorted(project.dismissed_suggestions)}
 
     @app.get("/projects/{project_id}/document")
@@ -256,6 +260,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def acknowledge(project_id: str, body: AcknowledgeIn):
         project = project_or_404(project_id)
         project.acknowledged.update(body.surfaces)
+        store.save(project)
         return {"acknowledged": sorted(project.acknowledged)}
 
     # -- Stage 2: index (gated on the auditor) ------------------------------
@@ -295,6 +300,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         if not validation.passed:
             project.index = None
             raise HTTPException(500, f"index validation failed: {validation.errors}")
+        store.save(project)
         return {"chunks": len(project.chunks), "validated": True,
                 "embedding_source": source, "enriched_chunks": enriched}
 
@@ -380,6 +386,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             except Exception as exc:  # surfaced to the user, never silent
                 run.status = "error"
                 run.error = str(exc)
+            finally:
+                store.save_run(project, run)
 
         thread = threading.Thread(target=worker, daemon=True)
         run.thread = thread
@@ -396,6 +404,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         run = Run(run_id=str(uuid.uuid4()), angle=body.angle,
                   template_family=body.template_family)
         project.runs[run.run_id] = run
+        store.save_run(project, run)
         _launch(project, run)
         return {"run_id": run.run_id}
 
