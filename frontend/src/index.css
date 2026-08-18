@@ -1,0 +1,79 @@
+@import "tailwindcss";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-serif/600.css";
+@import "@fontsource/ibm-plex-serif/700.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+@theme {
+  --color-ink: #1a2332;
+  --color-ink-soft: #4a5568;
+  --color-paper: #fafaf7;
+  --color-card: #ffffff;
+  --color-vault: #0e4f45;
+  --color-vault-soft: #e2efec;
+  --color-stamp: #c2482e;
+  --color-stamp-soft: #f9e8e3;
+  --color-brass: #a87b2d;
+  --color-brass-soft: #f5eeda;
+  --color-mist: #e4e4dc;
+
+  --font-display: "IBM Plex Serif", Georgia, serif;
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+::selection {
+  background: var(--color-vault-soft);
+}
+
+/* vault chip — the platform's signature mark for a masked value */
+.vault-chip {
+  font-family: var(--font-mono);
+  font-size: 0.78em;
+  background: var(--color-vault);
+  color: #d9ece8;
+  border-radius: 3px;
+  padding: 0.08em 0.4em 0.08em 0.3em;
+  border-left: 3px solid var(--color-brass);
+  white-space: nowrap;
+}
+.vault-chip[data-cat="person"] { border-left-color: #7d5ba6; }
+.vault-chip[data-cat="system"] { border-left-color: #2f6f9f; }
+.vault-chip[data-cat="email"],
+.vault-chip[data-cat="phone"] { border-left-color: #c2482e; }
+
+/* gate stamp — rotated, inked, unmistakably a verdict */
+.stamp {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.12em;
+  border: 1.5px solid currentColor;
+  border-radius: 2px;
+  padding: 0.05rem 0.35rem;
+  transform: rotate(-4deg);
+  display: inline-block;
+}
+
+button:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--color-brass);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
