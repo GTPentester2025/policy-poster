@@ -53,6 +53,7 @@ class LLMSettings:
     base_url: str = ""
     api_key: str = ""
     embed_model: str = ""  # optional: /embeddings model on the same endpoint
+    roles: dict[str, str] = field(default_factory=dict)  # generate/verify/utility model overrides
     extra_headers: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -75,6 +76,7 @@ class LLMSettings:
             "model": self.model,
             "base_url": self.base_url,
             "embed_model": self.embed_model,
+            "roles": dict(self.roles),
             "api_key_set": bool(self.api_key),
         }
 
@@ -309,7 +311,14 @@ def _error_detail(resp: httpx.Response) -> str:
 
 
 def make_llm(settings: LLMSettings,
-             transport: httpx.BaseTransport | None = None) -> LLMClient:
+             transport: httpx.BaseTransport | None = None,
+             role: str | None = None) -> LLMClient:
+    """`role` (generate/verify/utility) swaps in the per-role model override
+    when configured — same provider, base URL, and key."""
+    if role and settings.roles.get(role):
+        from dataclasses import replace as _replace
+
+        settings = _replace(settings, model=settings.roles[role])
     provider = (settings.provider or "offline").lower()
 
     if provider == "offline":

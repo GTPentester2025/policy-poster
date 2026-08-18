@@ -72,6 +72,7 @@ class LLMSettingsIn(BaseModel):
     base_url: str = ""
     api_key: str = ""
     embed_model: str = ""
+    roles: dict = {}
 
 
 class ResumeIn(BaseModel):
@@ -120,8 +121,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
 
     app.state.llm_settings = _load_llm_settings()
 
-    def _make_llm():
-        return make_llm(app.state.llm_settings)
+    def _make_llm(role: str | None = None):
+        return make_llm(app.state.llm_settings, role=role)
 
     def project_or_404(project_id: str) -> Project:
         project = store.get(project_id)
@@ -344,9 +345,18 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         from ..egress_log import LoggingLLM
 
         run_dir = os.path.join(project.work_dir, "runs", run.run_id)
+        egress_path = os.path.join(run_dir, "egress.jsonl")
         logging_llm = LoggingLLM(
-            _make_llm(), os.path.join(run_dir, "egress.jsonl"),
-            context={"run_id": run.run_id},
+            _make_llm("generate"), egress_path,
+            context={"run_id": run.run_id, "role": "generate"},
+        )
+        verify_llm = LoggingLLM(
+            _make_llm("verify"), egress_path,
+            context={"run_id": run.run_id, "role": "verify"},
+        )
+        utility_llm = LoggingLLM(
+            _make_llm("utility"), egress_path,
+            context={"run_id": run.run_id, "role": "utility"},
         )
 
         def on_event(event: dict):
@@ -354,9 +364,10 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             event["ts"] = _time.time()
             if event.get("type") == "node_start":
                 run.current_node = event.get("node")
-                logging_llm.context.update(
-                    node=event.get("node"), attempt=event.get("attempt"),
-                )
+                for wrapper in (logging_llm, verify_llm, utility_llm):
+                    wrapper.context.update(
+                        node=event.get("node"), attempt=event.get("attempt"),
+                    )
             run.events.append(event)
 
         def worker():
@@ -380,6 +391,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                         if app.state.llm_settings.provider != "offline"
                         else "single_shot"
                     ),
+                    verify_llm=verify_llm,
+                    utility_llm=utility_llm,
                 )
                 run.outcome = outcome
                 run.status = outcome.status
@@ -579,6 +592,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             # empty api_key in the request keeps the stored one
             api_key=body.api_key.strip() or current.api_key,
             embed_model=body.embed_model.strip(),
+            roles={k: v.strip() for k, v in (body.roles or {}).items() if v.strip()},
         )
         if new.provider not in PROVIDERS:
             raise HTTPException(400, f"unknown provider (known: {PROVIDERS})")

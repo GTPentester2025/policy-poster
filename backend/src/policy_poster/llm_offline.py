@@ -71,6 +71,11 @@ class OfflineLLM:
             return json.dumps({"claims": []})
         if "verify citations" in system.lower() or "citation" in system.lower():
             return json.dumps({"citations": []})
+        if "editorial reviewer" in system.lower():
+            return json.dumps({
+                "compliance": {"verdict": "pass", "findings": []},
+                "tone": {"findings": []},
+            })
         if "tone and clarity" in system.lower():
             return json.dumps({"verdict": "pass", "findings": []})
         if "compliance reviewer" in system.lower():

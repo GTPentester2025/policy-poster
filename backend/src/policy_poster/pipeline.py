@@ -18,11 +18,10 @@ import uuid
 from .agents.generator import generate_content
 from .agents.qa import (
     check_citations,
-    check_compliance,
     check_coverage,
+    check_editorial,
     check_groundedness,
     check_layout_fit,
-    check_tone,
 )
 from .chunker import Chunk
 from .content import PosterContent, TemplateContract
@@ -65,7 +64,11 @@ def build_poster_pipeline(
     feedback=None,  # FeedbackStore | None — promoted exemplars shape generation
     smart_retrieval: bool = False,  # decomposition + LLM rerank (real providers)
     generation_mode: str = "single_shot",  # "clause_first" for real providers
+    verify_llm=None,   # QA gates (defaults to llm)
+    utility_llm=None,  # retrieval judge/decompose/rerank + strategy (defaults to llm)
 ) -> list[Node]:
+    verify_llm = verify_llm or llm
+    utility_llm = utility_llm or llm
     token = str(uuid.uuid4())
     runtime: dict = {"retrieved": [], "content": None}
     _RUNTIME[token] = runtime
@@ -87,7 +90,7 @@ def build_poster_pipeline(
     def retrieve_fn(ctx):
         intent = angle if not ctx.corrective else f"{angle}. {ctx.corrective}"
         retrieved, report = AgenticRetriever(
-            index, llm, decompose=smart_retrieval, rerank=smart_retrieval,
+            index, utility_llm, decompose=smart_retrieval, rerank=smart_retrieval,
         ).retrieve(intent)
         runtime["retrieved"] = retrieved
         return NodeResult(updates={
@@ -158,19 +161,20 @@ def build_poster_pipeline(
         return node_fn
 
     def groundedness_fn(ctx):
-        return _verdict_result(check_groundedness(_content(ctx), _retrieved(ctx), llm))
+        return _verdict_result(check_groundedness(_content(ctx), _retrieved(ctx), verify_llm))
 
     def citation_fn(ctx):
-        return _verdict_result(check_citations(_content(ctx), _retrieved(ctx), llm))
+        return _verdict_result(check_citations(_content(ctx), _retrieved(ctx), verify_llm))
 
     def coverage_fn(ctx):
         return _verdict_result(check_coverage([_content(ctx)], all_chunks))
 
-    def compliance_fn(ctx):
-        return _verdict_result(check_compliance(_content(ctx), _retrieved(ctx), llm))
-
-    def tone_fn(ctx):
-        return _verdict_result(check_tone(_content(ctx), angle, llm))
+    def editorial_fn(ctx):
+        compliance, tone = check_editorial(_content(ctx), _retrieved(ctx), angle, verify_llm)
+        result = _verdict_result(compliance)
+        result.updates["verdict_tone"] = tone.to_dict()
+        result.findings += [vars(f) for f in tone.findings]
+        return result
 
     def layout_fn(ctx):
         return _verdict_result(check_layout_fit(_content(ctx), contract))
@@ -219,9 +223,8 @@ def build_poster_pipeline(
              agent="citation_verifier"),
         Node("qa_coverage", coverage_fn, blocking=True, root_cause="retrieve",
              agent="coverage_agent"),
-        Node("qa_compliance", compliance_fn, blocking=True, root_cause="generate",
-             agent="compliance_gate"),
-        Node("qa_tone", tone_fn, agent="tone_editor"),
+        Node("qa_editorial", editorial_fn, blocking=True, root_cause="generate",
+             agent="editorial"),
         Node("qa_layout", layout_fn, agent="layout_fit"),
         Node("rehydrate", rehydrate_fn, blocking=True, root_cause="rehydrate",
              agent="rehydration_validator"),
@@ -244,11 +247,14 @@ def run_poster_pipeline(
     on_event=None,
     smart_retrieval: bool = False,
     generation_mode: str = "single_shot",
+    verify_llm=None,
+    utility_llm=None,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
         contract=contract, llm=llm, work_dir=work_dir, feedback=feedback,
         smart_retrieval=smart_retrieval, generation_mode=generation_mode,
+        verify_llm=verify_llm, utility_llm=utility_llm,
     )
     orchestrator = Orchestrator(
         nodes=nodes,

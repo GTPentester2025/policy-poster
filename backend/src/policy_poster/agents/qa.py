@@ -20,8 +20,10 @@ _CLAIMS_SCHEMA = {
         "type": "object",
         "properties": {"slot": {"type": "string"},
                         "supported": {"type": "boolean"},
-                        "reason": {"type": "string"}},
-        "required": ["slot", "supported", "reason"],
+                        "reason": {"type": "string"},
+                        "confidence": {"type": "string",
+                                        "enum": ["high", "low"]}},
+        "required": ["slot", "supported", "reason", "confidence"],
         "additionalProperties": False}}},
     "required": ["claims"], "additionalProperties": False,
 }
@@ -33,8 +35,11 @@ _CITATIONS_SCHEMA = {
         "properties": {"slot": {"type": "string"},
                         "clause_id": {"type": "string"},
                         "says_what_claimed": {"type": "boolean"},
-                        "reason": {"type": "string"}},
-        "required": ["slot", "clause_id", "says_what_claimed", "reason"],
+                        "reason": {"type": "string"},
+                        "confidence": {"type": "string",
+                                        "enum": ["high", "low"]}},
+        "required": ["slot", "clause_id", "says_what_claimed", "reason",
+                     "confidence"],
         "additionalProperties": False}}},
     "required": ["citations"], "additionalProperties": False,
 }
@@ -95,8 +100,23 @@ _GROUNDEDNESS_SYSTEM = """You are a strict groundedness verifier. For each poste
 every fact, number, obligation, deadline, or consequence it asserts is present
 in the provided policy spans. Rhetorical flourishes are fine; unsupported facts
 are not. Invented statistics, legal citations, or external references are
-always unsupported. Respond with JSON only:
-{"claims": [{"slot": "...", "supported": true|false, "reason": "..."}]}"""
+always unsupported.
+
+Rubric:
+- supported=false + confidence=high: the line asserts a specific fact/number/
+  deadline/consequence that no span contains.
+- supported=false + confidence=low: possibly implied but not stated verbatim.
+- Tone, style, or redundancy concerns are NOT groundedness findings.
+
+Examples:
+- Span: "Incidents must be reported within 24 hours." Line: "Report incidents
+  within 24 hours" -> supported=true.
+- Span: same. Line: "Fines up to $5M for late reports" -> supported=false,
+  confidence=high (invented consequence).
+
+Respond with JSON only:
+{"claims": [{"slot": "...", "supported": true|false, "reason": "...",
+             "confidence": "high|low"}]}"""
 
 
 def check_groundedness(content: PosterContent, retrieved: list[Chunk], llm: LLMClient) -> Verdict:
@@ -109,21 +129,40 @@ def check_groundedness(content: PosterContent, retrieved: list[Chunk], llm: LLMC
     if data is None or not isinstance(data.get("claims"), list):
         return Verdict("groundedness", "reject",
                        [Finding("blocker", "verifier returned unparseable judgment")])
-    findings = [
-        Finding("blocker", c.get("reason", "unsupported claim"), c.get("slot"))
-        for c in data["claims"]
-        if isinstance(c, dict) and not c.get("supported", False)
-    ]
-    return Verdict("groundedness", "reject" if findings else "pass", findings)
+    blockers, advisories = [], []
+    for c in data["claims"]:
+        if not isinstance(c, dict) or c.get("supported", False):
+            continue
+        finding = Finding(
+            "blocker" if c.get("confidence", "high") == "high" else "minor",
+            c.get("reason", "unsupported claim"), c.get("slot"),
+        )
+        (blockers if finding.severity == "blocker" else advisories).append(finding)
+    return Verdict("groundedness", "reject" if blockers else "pass",
+                   blockers + advisories)
 
 
 # -- Citation Verifier (BLOCKING, C4) ----------------------------------------
 
 _CITATION_SYSTEM = """You verify citations on poster lines. For each line and each clause it cites,
 decide whether the cited clause actually says what the line claims (catching
-citation drift). Respond with JSON only:
-{"citations": [{"slot": "...", "clause_id": "...", "says_what_claimed": true|false,
-                "reason": "..."}]}"""
+citation drift).
+
+Rubric:
+- says_what_claimed=false + confidence=high: the cited clause is about a
+  different topic than the line (e.g. a retention clause cited for a
+  reporting deadline).
+- says_what_claimed=false + confidence=low: same topic, but the clause is
+  broader/narrower than the line implies.
+- A condensed or paraphrased version of the clause still counts as saying it.
+
+Example: line "Report within 24 hours" citing a clause "Records are destroyed
+after 90 days" -> says_what_claimed=false, confidence=high.
+
+Respond with JSON only:
+{"citations": [{"slot": "...", "clause_id": "...",
+                "says_what_claimed": true|false, "reason": "...",
+                "confidence": "high|low"}]}"""
 
 
 def check_citations(content: PosterContent, retrieved: list[Chunk], llm: LLMClient) -> Verdict:
@@ -149,14 +188,18 @@ def check_citations(content: PosterContent, retrieved: list[Chunk], llm: LLMClie
     if data is None or not isinstance(data.get("citations"), list):
         return Verdict("citation", "reject",
                        [Finding("blocker", "verifier returned unparseable judgment")])
+    blockers, advisories = [], []
     for item in data["citations"]:
-        if isinstance(item, dict) and not item.get("says_what_claimed", False):
-            findings.append(Finding(
-                "blocker",
-                item.get("reason", f"citation drift on {item.get('clause_id')}"),
-                item.get("slot"),
-            ))
-    return Verdict("citation", "reject" if findings else "pass", findings)
+        if not isinstance(item, dict) or item.get("says_what_claimed", False):
+            continue
+        finding = Finding(
+            "blocker" if item.get("confidence", "high") == "high" else "minor",
+            item.get("reason", f"citation drift on {item.get('clause_id')}"),
+            item.get("slot"),
+        )
+        (blockers if finding.severity == "blocker" else advisories).append(finding)
+    return Verdict("citation", "reject" if blockers else "pass",
+                   blockers + advisories)
 
 
 # -- Coverage / Completeness Agent (BLOCKING) --------------------------------
@@ -193,6 +236,68 @@ def check_coverage(posters: list[PosterContent], all_chunks: list[Chunk]) -> Ver
             f"recommend additional poster(s) to carry uncovered obligations: {', '.join(dropped)}",
         ))
     return Verdict("coverage", "reject" if dropped else "pass", findings)
+
+
+# -- Editorial pass: Compliance (BLOCKING) + Tone (REVISE-ONLY), one call ----
+
+_EDITORIAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "compliance": _VERDICT_SCHEMA,
+        "tone": {"type": "object",
+                  "properties": {"findings": _VERDICT_SCHEMA["properties"]["findings"]},
+                  "required": ["findings"],
+                  "additionalProperties": False},
+    },
+    "required": ["compliance", "tone"],
+    "additionalProperties": False,
+}
+
+_EDITORIAL_SYSTEM = """You are an editorial reviewer for internal policy posters, producing two
+independent verdicts in one pass.
+
+COMPLIANCE (blocking): reject copy that overstates the policy into legal
+overreach, softens a mandatory obligation (must/shall becoming should/try),
+or invents a consequence not present in the policy spans. Example: span says
+"must be reported within 1 hour", line says "try to report soon" -> reject.
+
+TONE (advisory only, never blocks): readability, employee-appropriate
+register, adherence to the chosen angle, no jargon, no redundancy between
+slots.
+
+Respond with JSON only:
+{"compliance": {"verdict": "pass"|"reject",
+                 "findings": [{"slot": "...", "detail": "..."}]},
+ "tone": {"findings": [{"slot": "...", "detail": "..."}]}}"""
+
+
+def check_editorial(content: PosterContent, retrieved: list[Chunk],
+                    angle: str, llm: LLMClient) -> tuple[Verdict, Verdict]:
+    """Returns (compliance_verdict, tone_verdict) from a single call."""
+    user = (
+        f"Chosen angle/tone: {angle}\n\n"
+        f"Policy spans:\n{_spans_block(retrieved)}\n\n"
+        f"Poster lines:\n{_slots_block(content)}"
+    )
+    data = complete_json(llm, _EDITORIAL_SYSTEM, user, _EDITORIAL_SCHEMA,
+                         max_tokens=1536)
+    if data is None:
+        return (
+            Verdict("compliance", "reject",
+                    [Finding("blocker", "editorial judgment unparseable")]),
+            Verdict("tone", "pass"),
+        )
+    comp = data.get("compliance") or {}
+    comp_findings = [Finding("blocker", f.get("detail", ""), f.get("slot"))
+                     for f in comp.get("findings", []) if isinstance(f, dict)]
+    comp_verdict = "reject" if comp.get("verdict") == "reject" or comp_findings else "pass"
+    tone = data.get("tone") or {}
+    tone_findings = [Finding("minor", f.get("detail", ""), f.get("slot"))
+                     for f in tone.get("findings", []) if isinstance(f, dict)]
+    return (
+        Verdict("compliance", comp_verdict, comp_findings),
+        Verdict("tone", "revise" if tone_findings else "pass", tone_findings),
+    )
 
 
 # -- Tone & Clarity Editor (REVISE-ONLY) -------------------------------------

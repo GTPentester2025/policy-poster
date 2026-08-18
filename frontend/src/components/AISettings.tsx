@@ -39,6 +39,7 @@ export function AISettings({ onClose }: { onClose: () => void }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [embedModel, setEmbedModel] = useState("");
+  const [roles, setRoles] = useState<Record<string, string>>({});
   const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -53,11 +54,13 @@ export function AISettings({ onClose }: { onClose: () => void }) {
         setModel(data.current.model);
         setBaseUrl(data.current.base_url);
         setEmbedModel(data.current.embed_model ?? "");
+        setRoles((data.current as { roles?: Record<string, string> }).roles ?? {});
       });
   }, []);
 
   const body = () => ({
-    provider, model, base_url: baseUrl, api_key: apiKey, embed_model: embedModel,
+    provider, model, base_url: baseUrl, api_key: apiKey,
+    embed_model: embedModel, roles,
   });
 
   const loadModels = async () => {
@@ -235,6 +238,36 @@ export function AISettings({ onClose }: { onClose: () => void }) {
               </>
             )}
           </>
+        )}
+
+        {provider !== "offline" && (
+          <details className="mt-3">
+            <summary className="text-xs font-medium cursor-pointer text-ink-soft">
+              Advanced — per-role models
+            </summary>
+            <p className="text-[11px] text-ink-soft mt-1">
+              Route roles to different models on the same endpoint: a strong
+              writer, a cheap verifier. Blank = main model.
+            </p>
+            {(["generate", "verify", "utility"] as const).map((role) => (
+              <div key={role} className="mt-2">
+                <label className="block text-[11px] font-medium mb-0.5">
+                  {role === "generate" ? "Generate (poster copy)"
+                    : role === "verify" ? "Verify (QA gates + retrieval judge)"
+                    : "Utility (rerank, enrich, shorten)"}
+                </label>
+                <input
+                  className="w-full border border-mist rounded px-2 py-1 text-xs bg-paper font-mono"
+                  value={roles[role] ?? ""}
+                  list="ai-model-options"
+                  placeholder="(main model)"
+                  onChange={(e) =>
+                    setRoles({ ...roles, [role]: e.target.value })
+                  }
+                />
+              </div>
+            ))}
+          </details>
         )}
 
         {probe && (
