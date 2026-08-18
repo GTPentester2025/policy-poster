@@ -349,6 +349,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     state_overrides=edits,
                     feedback=feedback_store,
                     on_event=on_event,
+                    smart_retrieval=app.state.llm_settings.provider != "offline",
                 )
                 run.outcome = outcome
                 run.status = outcome.status

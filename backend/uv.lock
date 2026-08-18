@@ -714,6 +714,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "fastapi" },
+    { name = "fastembed" },
     { name = "lancedb" },
     { name = "numpy" },
     { name = "playwright" },
@@ -741,6 +742,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "fastapi", specifier = ">=0.141.1" },
+    { name = "fastembed", specifier = ">=0.8.0" },
     { name = "fastembed", marker = "extra == 'embeddings'", specifier = ">=0.4" },
     { name = "lancedb", specifier = ">=0.15" },
     { name = "numpy", specifier = ">=1.26" },

@@ -67,6 +67,31 @@ class RetrievalReport:
     consulted_ids: list[str] = field(default_factory=list)
     retained_ids: list[str] = field(default_factory=list)
     expanded_ids: list[str] = field(default_factory=list)
+    sub_intents: list[str] = field(default_factory=list)
+
+
+_DECOMPOSE_SCHEMA = {
+    "type": "object",
+    "properties": {"sub_intents": {"type": "array", "items": {"type": "string"}}},
+    "required": ["sub_intents"],
+    "additionalProperties": False,
+}
+
+_DECOMPOSE_SYSTEM = """Decompose a policy-poster retrieval intent into 0-4 distinct sub-intents that
+should each be searched separately (obligations, deadlines, consequences,
+who it applies to). Return {"sub_intents": []} when the intent is already
+narrow. JSON only."""
+
+_RERANK_SCHEMA = {
+    "type": "object",
+    "properties": {"ranking": {"type": "array", "items": {"type": "string"}}},
+    "required": ["ranking"],
+    "additionalProperties": False,
+}
+
+_RERANK_SYSTEM = """Rank the policy excerpts by relevance to the retrieval intent, most relevant
+first. Respond with JSON: {"ranking": ["chunk_id", ...]} listing every
+chunk_id exactly once."""
 
 
 class AgenticRetriever:
@@ -76,11 +101,53 @@ class AgenticRetriever:
         llm: LLMClient,
         k: int = 8,
         max_iterations: int = 4,
+        decompose: bool = False,
+        rerank: bool = False,
     ) -> None:
         self._index = index
         self._llm = llm
         self._k = k
         self._max_iterations = max_iterations
+        self._decompose = decompose
+        self._rerank = rerank
+
+    def _decompose_intent(self, intent: str) -> list[str]:
+        try:
+            data = complete_json(self._llm, _DECOMPOSE_SYSTEM,
+                                 f"Retrieval intent: {intent}",
+                                 _DECOMPOSE_SCHEMA, max_tokens=512)
+        except Exception:
+            return []
+        subs = (data or {}).get("sub_intents") or []
+        return [s for s in subs if isinstance(s, str) and s.strip()][:4]
+
+    def _rerank_chunks(self, intent: str, chunks: list[Chunk]) -> list[Chunk]:
+        if not self._rerank or len(chunks) <= self._k:
+            return chunks[: self._k]
+        excerpts = "\n\n".join(
+            f"[{c.chunk_id}] {c.text[:300]}" for c in chunks
+        )
+        try:
+            data = complete_json(self._llm, _RERANK_SYSTEM,
+                                 f"Intent: {intent}\n\nExcerpts:\n{excerpts}",
+                                 _RERANK_SCHEMA, max_tokens=1024)
+        except Exception:
+            data = None
+        ranking = (data or {}).get("ranking") or []
+        by_id = {c.chunk_id: c for c in chunks}
+        ordered = [by_id[cid] for cid in ranking if cid in by_id]
+        ordered += [c for c in chunks if c not in ordered]  # fail-safe tail
+        return ordered[: self._k]
+
+    def _gather(self, intent: str, query: str,
+                sub_intents: list[str]) -> list[Chunk]:
+        pool = self._k * 2 if self._rerank else self._k
+        candidates = list(self._index.hybrid_search(query, pool))
+        for sub in sub_intents:
+            for chunk in self._index.hybrid_search(sub, max(2, self._k // 2)):
+                if all(chunk.chunk_id != c.chunk_id for c in candidates):
+                    candidates.append(chunk)
+        return self._rerank_chunks(intent, candidates)
 
     def _judge(self, intent: str, query: str, chunks: list[Chunk]) -> dict | None:
         excerpts = "\n\n".join(
@@ -99,8 +166,14 @@ class AgenticRetriever:
         query = intent
         kept: dict[str, Chunk] = {}
 
-        for _ in range(self._max_iterations):
-            retrieved = self._index.hybrid_search(query, self._k)
+        if self._decompose:
+            report.sub_intents = self._decompose_intent(intent)
+
+        for iteration in range(self._max_iterations):
+            retrieved = self._gather(
+                intent, query,
+                report.sub_intents if iteration == 0 else [],
+            )
             retrieved_ids = [c.chunk_id for c in retrieved]
             for cid in retrieved_ids:
                 if cid not in report.consulted_ids:

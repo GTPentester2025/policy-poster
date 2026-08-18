@@ -446,10 +446,17 @@ def make_embedder(settings: LLMSettings,
                 api_key=settings.api_key or None, transport=transport,
             ), f"{embed_model} via {provider}")
 
-    if os.environ.get("POLICY_POSTER_EMBEDDER") == "fastembed":
-        from .embedder import FastEmbedEmbedder
+    # semantic floor: real local embeddings by default for any configured
+    # provider without an embeddings endpoint (e.g. openrouter, anthropic).
+    # Offline mode and POLICY_POSTER_EMBEDDER=hashing stay hermetic.
+    forced = os.environ.get("POLICY_POSTER_EMBEDDER", "")
+    if forced != "hashing" and (forced == "fastembed" or provider not in ("", "offline")):
+        try:
+            from .embedder import FastEmbedEmbedder
 
-        return FastEmbedEmbedder(), "local fastembed (bge-small)"
+            return FastEmbedEmbedder(), "local fastembed (bge-small)"
+        except Exception:
+            pass  # model download unavailable → hashing fallback below
     return HashingEmbedder(), "local hashing (no AI)"
 
 

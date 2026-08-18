@@ -63,6 +63,7 @@ def build_poster_pipeline(
     llm: LLMClient,
     work_dir: str,
     feedback=None,  # FeedbackStore | None — promoted exemplars shape generation
+    smart_retrieval: bool = False,  # decomposition + LLM rerank (real providers)
 ) -> list[Node]:
     token = str(uuid.uuid4())
     runtime: dict = {"retrieved": [], "content": None}
@@ -84,7 +85,9 @@ def build_poster_pipeline(
 
     def retrieve_fn(ctx):
         intent = angle if not ctx.corrective else f"{angle}. {ctx.corrective}"
-        retrieved, report = AgenticRetriever(index, llm).retrieve(intent)
+        retrieved, report = AgenticRetriever(
+            index, llm, decompose=smart_retrieval, rerank=smart_retrieval,
+        ).retrieve(intent)
         runtime["retrieved"] = retrieved
         return NodeResult(updates={
             "runtime_token": token,
@@ -232,10 +235,12 @@ def run_poster_pipeline(
     state_overrides: dict | None = None,
     feedback=None,
     on_event=None,
+    smart_retrieval: bool = False,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
         contract=contract, llm=llm, work_dir=work_dir, feedback=feedback,
+        smart_retrieval=smart_retrieval,
     )
     orchestrator = Orchestrator(
         nodes=nodes,
