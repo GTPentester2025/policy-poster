@@ -372,6 +372,30 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             raise HTTPException(404, "export not found")
         return FileResponse(path, filename=os.path.basename(path))
 
+    @app.get("/runs/{run_id}/exports/{orientation}.jpg")
+    def export_jpg_file(run_id: str, orientation: str):
+        """Lazily renders the React poster at 300 DPI via Playwright."""
+        project, run = run_or_404(run_id)
+        if run.outcome is None or "exports" not in run.outcome.state:
+            raise HTTPException(409, "run not complete")
+        out_dir = os.path.join(project.work_dir, "runs", run.run_id)
+        out_path = os.path.join(out_dir, f"poster_{orientation}.jpg")
+        if not os.path.exists(out_path):
+            from ..export_jpg import export_jpg
+
+            base_url = os.environ.get(
+                "POLICY_POSTER_BASE_URL", "http://127.0.0.1:8000",
+            )
+            try:
+                export_jpg(base_url, run_id, orientation, out_path)
+            except Exception as exc:
+                raise HTTPException(
+                    500,
+                    f"JPG render failed (is the full app with frontend served "
+                    f"at {base_url}? is chromium installed?): {exc}",
+                )
+        return FileResponse(out_path, filename=os.path.basename(out_path))
+
     @app.get("/runs/{run_id}/trace")
     def trace(run_id: str):
         project, run = run_or_404(run_id)
