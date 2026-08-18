@@ -11,6 +11,7 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "numpy>=1.26",
     "anthropic>=0.40",
+    "python-pptx>=1.0.2",
 ]
 
 [project.optional-dependencies]
