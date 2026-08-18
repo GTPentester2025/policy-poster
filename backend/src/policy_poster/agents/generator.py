@@ -36,6 +36,49 @@ GENERATOR_SCHEMA = {
     "additionalProperties": False,
 }
 
+_PLAN_SLOT = {
+    "type": "object",
+    "properties": {"clause_id": {"type": "string"},
+                    "quote": {"type": "string"}},
+    "required": ["clause_id", "quote"],
+    "additionalProperties": False,
+}
+
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {"plan": {
+        "type": "object",
+        "properties": {
+            "eyebrow": _PLAN_SLOT, "headline": _PLAN_SLOT,
+            "subhead": _PLAN_SLOT, "callout": _PLAN_SLOT, "cta": _PLAN_SLOT,
+            "body_points": {"type": "array", "items": _PLAN_SLOT},
+        },
+        "required": ["eyebrow", "headline", "subhead", "callout", "cta",
+                     "body_points"],
+        "additionalProperties": False,
+    }},
+    "required": ["plan"],
+    "additionalProperties": False,
+}
+
+_PLAN_SYSTEM = """You plan an awareness poster before any copy is written. For each slot,
+choose the single clause the copy will be built from, and quote the exact
+fragment (verbatim, <=200 chars) that supports it. Pick the most important
+obligations for body_points (1-4 of them). Only use clause_ids that appear
+in the excerpts. JSON only:
+{"plan": {"eyebrow": {"clause_id": "...", "quote": "..."}, "headline": {...},
+  "subhead": {...}, "callout": {...}, "cta": {...},
+  "body_points": [{"clause_id": "...", "quote": "..."}]}}"""
+
+_WRITE_FROM_PLAN_SYSTEM = """You write poster copy where each slot is derived ONLY from its assigned
+source quote (rewrite/condense the quote; never add facts, numbers, or
+consequences that are not in it). Keep placeholder tokens like ⟦ORG_001⟧
+EXACTLY as written. Respect character budgets:
+eyebrow <= {eyebrow}, headline <= {headline}, subhead <= {subhead},
+each body point <= {body_point}, callout <= {callout}, cta <= {cta}.
+Also produce a coverage_map covering every clause_id in the excerpts.
+Respond with the standard poster JSON schema."""
+
 _SYSTEM_TEMPLATE = """You write internal awareness poster copy strictly grounded in provided policy excerpts.
 
 HARD RULES:
@@ -140,6 +183,33 @@ Never invent facts. Keep ⟦...⟧ tokens exactly. Respond with the FULL poster
 JSON in the same schema."""
 
 
+def _plan_slots(angle: str, retrieved: list[Chunk], llm: LLMClient,
+                corrective: str | None) -> dict | None:
+    """Clause-first step 1: pick clause + verbatim quote per slot."""
+    known = {cid for c in retrieved for cid in c.clause_ids}
+    excerpts = "\n\n".join(
+        f"[clauses {', '.join(c.clause_ids)}] ({' > '.join(c.section_path)})\n{c.text}"
+        for c in retrieved
+    )
+    user = f"Campaign angle: {angle}\n\nPolicy excerpts:\n{excerpts}"
+    if corrective:
+        user += f"\n\nCORRECTIVE INSTRUCTION:\n{corrective}"
+    data = complete_json(llm, _PLAN_SYSTEM, user, PLAN_SCHEMA, max_tokens=2048)
+    plan = (data or {}).get("plan")
+    if not isinstance(plan, dict):
+        return None
+    for key in ("eyebrow", "headline", "subhead", "callout", "cta"):
+        entry = plan.get(key)
+        if not isinstance(entry, dict) or entry.get("clause_id") not in known:
+            return None
+    points = [p for p in plan.get("body_points", [])
+              if isinstance(p, dict) and p.get("clause_id") in known]
+    if not points:
+        return None
+    plan["body_points"] = points[:4]
+    return plan
+
+
 def generate_content(
     angle: str,
     contract: TemplateContract,
@@ -151,12 +221,44 @@ def generate_content(
     previous: dict | None = None,
     fix_slots: list[str] | None = None,
     length_of=len,  # effective length fn (post-rehydration measuring)
+    mode: str = "single_shot",  # or "clause_first" (citations bound from plan)
 ) -> tuple[PosterContent | None, list[str]]:
     """Returns (content, []) on success or (None, violations) for a retry edge.
 
     With `previous` + `fix_slots`, runs in targeted-repair mode: only the
     failing slots are rewritten; everything that already passed is kept."""
-    system, user = _build_prompt(angle, contract, retrieved, corrective, exemplar_block)
+    plan = None
+    if mode == "clause_first" and previous is None:
+        plan = _plan_slots(angle, retrieved, llm, corrective)
+
+    if plan is not None:
+        system = _WRITE_FROM_PLAN_SYSTEM.format(
+            eyebrow=contract.budget("eyebrow"),
+            headline=contract.budget("headline"),
+            subhead=contract.budget("subhead"),
+            body_point=contract.budget("body_point"),
+            callout=contract.budget("callout"),
+            cta=contract.budget("cta"),
+        )
+        if exemplar_block:
+            system += f"\n\n{exemplar_block}"
+        import json as _json_mod
+
+        excerpts = "\n\n".join(
+            f"[clauses {', '.join(c.clause_ids)}] ({' > '.join(c.section_path)})\n{c.text}"
+            for c in retrieved
+        )
+        user = (
+            f"Campaign angle: {angle}\n\n"
+            f"Slot source plan (each slot derived ONLY from its quote):\n"
+            f"{_json_mod.dumps(plan, ensure_ascii=False)}\n\n"
+            f"All excerpts (for coverage_map):\n{excerpts}\n\n"
+            "Write the poster content JSON."
+        )
+        if corrective:
+            user += f"\n\nCORRECTIVE INSTRUCTION FROM SUPERVISOR:\n{corrective}"
+    else:
+        system, user = _build_prompt(angle, contract, retrieved, corrective, exemplar_block)
     if previous is not None and fix_slots:
         import json as _json
 
@@ -199,6 +301,17 @@ def generate_content(
         )
     except (KeyError, TypeError) as exc:
         return None, [f"schema mismatch: {exc}"]
+
+    if plan is not None:
+        # C4 by construction: citations come from the plan, not the writer
+        content.eyebrow.citations = [plan["eyebrow"]["clause_id"]]
+        content.headline.citations = [plan["headline"]["clause_id"]]
+        content.subhead.citations = [plan["subhead"]["clause_id"]]
+        content.callout.citations = [plan["callout"]["clause_id"]]
+        content.cta.citations = [plan["cta"]["clause_id"]]
+        for i, point in enumerate(content.body_points):
+            if i < len(plan["body_points"]):
+                point.citations = [plan["body_points"][i]["clause_id"]]
 
     # budgets are repaired, never rejected — LLMs cannot count characters
     _repair_budgets(content, contract, llm, length_of)

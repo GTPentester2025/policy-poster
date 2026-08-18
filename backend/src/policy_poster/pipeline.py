@@ -64,6 +64,7 @@ def build_poster_pipeline(
     work_dir: str,
     feedback=None,  # FeedbackStore | None — promoted exemplars shape generation
     smart_retrieval: bool = False,  # decomposition + LLM rerank (real providers)
+    generation_mode: str = "single_shot",  # "clause_first" for real providers
 ) -> list[Node]:
     token = str(uuid.uuid4())
     runtime: dict = {"retrieved": [], "content": None}
@@ -125,6 +126,7 @@ def build_poster_pipeline(
             previous=previous,
             fix_slots=fix_slots or None,
             length_of=length_of,
+            mode=generation_mode,
         )
         if content is None and violations:
             # in-node repair pass: tell the model exactly what to fix before
@@ -241,11 +243,12 @@ def run_poster_pipeline(
     feedback=None,
     on_event=None,
     smart_retrieval: bool = False,
+    generation_mode: str = "single_shot",
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
         contract=contract, llm=llm, work_dir=work_dir, feedback=feedback,
-        smart_retrieval=smart_retrieval,
+        smart_retrieval=smart_retrieval, generation_mode=generation_mode,
     )
     orchestrator = Orchestrator(
         nodes=nodes,

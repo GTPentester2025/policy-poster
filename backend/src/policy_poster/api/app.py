@@ -369,6 +369,11 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     feedback=feedback_store,
                     on_event=on_event,
                     smart_retrieval=app.state.llm_settings.provider != "offline",
+                    generation_mode=(
+                        "clause_first"
+                        if app.state.llm_settings.provider != "offline"
+                        else "single_shot"
+                    ),
                 )
                 run.outcome = outcome
                 run.status = outcome.status
