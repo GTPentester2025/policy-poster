@@ -13,7 +13,15 @@ export interface StageState {
   status: "todo" | "active" | "passed" | "blocked";
 }
 
-export function StageRail({ stages }: { stages: StageState[] }) {
+export function StageRail({
+  stages,
+  provider,
+  onOpenSettings,
+}: {
+  stages: StageState[];
+  provider?: string;
+  onOpenSettings?: () => void;
+}) {
   return (
     <nav
       aria-label="Workflow stages"
@@ -64,6 +72,24 @@ export function StageRail({ stages }: { stages: StageState[] }) {
           </div>
         </div>
       ))}
+      <div className="mt-auto pt-6 border-t border-mist flex flex-col gap-2">
+        {onOpenSettings && (
+          <button
+            className="text-left text-xs text-ink-soft hover:text-ink"
+            onClick={onOpenSettings}
+          >
+            ⚙ AI provider{" "}
+            {provider && (
+              <span className="font-mono text-[10px] px-1 rounded bg-vault-soft text-vault">
+                {provider}
+              </span>
+            )}
+          </button>
+        )}
+        <a className="text-xs text-ink-soft hover:text-ink" href="/admin">
+          ▤ Governance
+        </a>
+      </div>
     </nav>
   );
 }

@@ -55,10 +55,23 @@ uv run uvicorn policy_poster.api.serve:app --port 8000
 # open http://127.0.0.1:8000
 ```
 
-- With `ANTHROPIC_API_KEY` set, agents run on Claude (`claude-opus-5`,
-  server-side refusal fallbacks enabled). Without it — or with
-  `POLICY_POSTER_LLM=offline` — a deterministic extractive OfflineLLM runs the
-  whole flow with zero egress.
+- **Model-independent.** The pipeline talks to a provider-neutral
+  `LLMClient` protocol; pick the AI in the UI (⚙ AI provider) or via env:
+  - `anthropic` (Claude), `gemini` (Google), or any **OpenAI-compatible**
+    endpoint: `openai`, `groq`, `mistral`, `deepseek`, `together`,
+    `openrouter`, `xai`, and local servers `ollama` / `lmstudio` / `vllm` /
+    `custom` (own base URL; keyless local servers supported).
+  - Settings API: `GET/POST /api/settings/llm`, `POST /api/settings/llm/test`
+    (live probe), `POST /api/settings/llm/models` (catalog). API keys are
+    write-only — never echoed to the client.
+  - Base URLs are normalized (bare host, API root, or pasted
+    `/chat/completions` all work); reasoning-model token-param shape
+    (`max_tokens` vs `max_completion_tokens`) self-heals with a cached retry.
+  - Env: `POLICY_POSTER_LLM=<provider>`, `POLICY_POSTER_LLM_MODEL`,
+    `POLICY_POSTER_LLM_BASE_URL`, `POLICY_POSTER_LLM_API_KEY`. Default:
+    `anthropic` if `ANTHROPIC_API_KEY` is set, else `offline` — a
+    deterministic extractive stand-in that runs the whole flow with zero
+    egress.
 - `POLICY_POSTER_EMBEDDER=fastembed` switches embeddings to a local ONNX
   model (`uv sync --extra embeddings`); default is a deterministic hashing
   embedder.

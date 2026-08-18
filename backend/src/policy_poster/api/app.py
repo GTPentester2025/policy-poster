@@ -20,8 +20,6 @@ from ..content import DEFAULT_CONTRACT, PosterContent, TemplateContract
 from ..docx_parser import parse_docx
 from ..embedder import Embedder, HashingEmbedder
 from ..index import PolicyIndex, validate_index
-from ..llm import AnthropicLLM, LLMClient
-from ..llm_offline import OfflineLLM
 from ..ner import suggest_entities
 from ..pdf_parser import parse_pdf
 from ..pipeline import run_poster_pipeline
@@ -42,10 +40,14 @@ TEMPLATE_FAMILIES: dict[str, TemplateContract] = {
 }
 
 
-def _make_llm() -> LLMClient:
-    if os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("POLICY_POSTER_LLM") != "offline":
-        return AnthropicLLM()
-    return OfflineLLM()
+from ..llm_providers import (
+    LLMSettings,
+    OPENAI_COMPAT_BASES,
+    PROVIDERS,
+    list_models,
+    make_llm,
+    probe_connection,
+)
 
 
 def _make_embedder() -> Embedder:
@@ -68,6 +70,13 @@ class AcknowledgeIn(BaseModel):
 class RunIn(BaseModel):
     angle: str
     template_family: str = "default"
+
+
+class LLMSettingsIn(BaseModel):
+    provider: str
+    model: str = ""
+    base_url: str = ""
+    api_key: str = ""
 
 
 class ResumeIn(BaseModel):
@@ -100,6 +109,24 @@ def create_app(data_dir: str | None = None) -> FastAPI:
 
     feedback_store = FeedbackStore(os.path.join(resolved_data_dir, "feedback"))
     app.state.feedback = feedback_store
+
+    # -- LLM settings: env defaults, runtime-configurable, persisted locally --
+    import json as _json
+
+    settings_path = os.path.join(resolved_data_dir, "llm_settings.json")
+
+    def _load_llm_settings() -> LLMSettings:
+        if os.path.exists(settings_path):
+            try:
+                return LLMSettings(**_json.load(open(settings_path, encoding="utf-8")))
+            except Exception:
+                pass
+        return LLMSettings.from_env()
+
+    app.state.llm_settings = _load_llm_settings()
+
+    def _make_llm():
+        return make_llm(app.state.llm_settings)
 
     def project_or_404(project_id: str) -> Project:
         project = store.get(project_id)
@@ -444,6 +471,63 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     def feedback_remove(entry_id: str):
         feedback_store.remove(entry_id)
         return {"removed": entry_id}
+
+    # -- LLM provider settings (model-independent: any configured AI works) --
+
+    @app.get("/settings/llm")
+    def llm_settings_get():
+        return {
+            "current": app.state.llm_settings.redacted(),
+            "providers": PROVIDERS,
+            "default_base_urls": OPENAI_COMPAT_BASES,
+        }
+
+    @app.post("/settings/llm")
+    def llm_settings_set(body: LLMSettingsIn):
+        current: LLMSettings = app.state.llm_settings
+        new = LLMSettings(
+            provider=body.provider.lower().strip(),
+            model=body.model.strip(),
+            base_url=body.base_url.strip(),
+            # empty api_key in the request keeps the stored one
+            api_key=body.api_key.strip() or current.api_key,
+        )
+        if new.provider not in PROVIDERS:
+            raise HTTPException(400, f"unknown provider (known: {PROVIDERS})")
+        try:
+            make_llm(new)  # validates required fields eagerly
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        app.state.llm_settings = new
+        with open(settings_path, "w", encoding="utf-8") as f:
+            _json.dump(vars(new) | {"extra_headers": {}}, f)
+        return new.redacted()
+
+    @app.post("/settings/llm/models")
+    def llm_models(body: LLMSettingsIn):
+        """'Load models' — query the provider's live catalog. Never raises."""
+        current: LLMSettings = app.state.llm_settings
+        settings = LLMSettings(
+            provider=body.provider.lower().strip(),
+            model=body.model.strip(),
+            base_url=body.base_url.strip(),
+            api_key=body.api_key.strip() or current.api_key,
+        )
+        return list_models(settings)
+
+    @app.post("/settings/llm/test")
+    def llm_settings_test(body: LLMSettingsIn | None = None):
+        if body is not None:
+            current: LLMSettings = app.state.llm_settings
+            settings = LLMSettings(
+                provider=body.provider.lower().strip(),
+                model=body.model.strip(),
+                base_url=body.base_url.strip(),
+                api_key=body.api_key.strip() or current.api_key,
+            )
+        else:
+            settings = app.state.llm_settings
+        return probe_connection(settings)
 
     @app.get("/metrics")
     def metrics():

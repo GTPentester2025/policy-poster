@@ -1,4 +1,5 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { AISettings } from "./components/AISettings";
 import { StageRail, type StageState } from "./components/StageRail";
 import { AngleScreen } from "./screens/AngleScreen";
 import { PosterScreen } from "./screens/PosterScreen";
@@ -12,6 +13,19 @@ export default function App() {
   const [step, setStep] = useState<Step>("ingest");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [provider, setProvider] = useState<string>("");
+
+  const refreshProvider = useCallback(() => {
+    void fetch("/api/settings/llm")
+      .then((r) => r.json())
+      .then((d) => setProvider(d.current.provider))
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshProvider();
+  }, [refreshProvider]);
 
   const stages: StageState[] = [
     { id: "ingest", label: "Ingest", status: stageStatus("ingest", step) },
@@ -25,7 +39,19 @@ export default function App() {
 
   return (
     <div className="flex min-h-screen">
-      <StageRail stages={stages} />
+      <StageRail
+        stages={stages}
+        provider={provider}
+        onOpenSettings={() => setShowSettings(true)}
+      />
+      {showSettings && (
+        <AISettings
+          onClose={() => {
+            setShowSettings(false);
+            refreshProvider();
+          }}
+        />
+      )}
       <main className="flex-1 min-w-0">
         {step === "ingest" && (
           <UploadScreen
