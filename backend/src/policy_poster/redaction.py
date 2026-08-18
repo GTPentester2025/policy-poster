@@ -168,3 +168,14 @@ def apply_redaction(text: str, ledger: RedactionLedger) -> RedactionResult:
         cursor = m.end()
     out.append(text[cursor:])
     return RedactionResult(sanitized_text="".join(out), occurrences=occurrences)
+
+
+def rehydrated_length(text: str, ledger: "RedactionLedger") -> int:
+    """Length the text will have after placeholders expand to real values —
+    the length that matters for poster budgets."""
+    mapping = ledger.redaction_map
+
+    def swap(match):
+        return mapping.get(match.group(0), match.group(0))
+
+    return len(PLACEHOLDER_RE.sub(swap, text))

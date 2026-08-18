@@ -55,6 +55,11 @@ class OfflineLLM:
     """Zero-egress deterministic responder. Not an LLM — a scripted policy."""
 
     def complete(self, system: str, user: str, max_tokens: int = 1024) -> str:
+        if "shorten poster copy" in system.lower():
+            m = re.search(r"AT MOST (\d+) characters.*?:\n(.*)", user, re.DOTALL)
+            if m:
+                return _truncate(m.group(2).strip(), int(m.group(1)))
+            return user.rsplit(":", 1)[-1].strip()[:60]
         if "retrieval intent" in system.lower() or "retrieval intent" in user.lower():
             return json.dumps({"sufficient": True, "keep": "ALL",
                                "discard": [], "refined_query": None})

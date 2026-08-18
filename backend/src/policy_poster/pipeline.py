@@ -36,7 +36,7 @@ from .orchestrator import (
     RunOutcome,
     Supervisor,
 )
-from .redaction import RedactionLedger
+from .redaction import RedactionLedger, rehydrated_length
 from .rehydration import rehydrate, validate_rehydration
 from .retrieval import AgenticRetriever
 from .export_pptx import export_both_orientations
@@ -115,12 +115,16 @@ def build_poster_pipeline(
                     ]
             if fix_slots:
                 previous = ctx.state["content"]
+        def length_of(t):
+            return rehydrated_length(t, ledger)
+
         content, violations = generate_content(
             angle, contract, _retrieved(ctx), llm,
             corrective=ctx.corrective,
             exemplar_block=exemplar_block,
             previous=previous,
             fix_slots=fix_slots or None,
+            length_of=length_of,
         )
         if content is None and violations:
             # in-node repair pass: tell the model exactly what to fix before
@@ -136,6 +140,7 @@ def build_poster_pipeline(
                 angle, contract, _retrieved(ctx), llm,
                 corrective=repair_note,
                 exemplar_block=exemplar_block,
+                length_of=length_of,
             )
         if content is None:
             return NodeResult(

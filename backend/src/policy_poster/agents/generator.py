@@ -84,19 +84,19 @@ def _build_prompt(angle: str, contract: TemplateContract, chunks: list[Chunk],
     return system, user
 
 
-def _word_trim(text: str, budget: int) -> str:
-    """Deterministic last-resort shorten: cut at a word boundary, no ellipsis
-    mid-clause weirdness, never invents content."""
+def _word_trim(text: str, budget: int, length_of=len) -> str:
+    """Deterministic last-resort shorten: drop trailing words until the
+    EFFECTIVE (post-rehydration) length fits. Never invents content."""
     text = " ".join(text.split())
-    if len(text) <= budget:
-        return text
-    cut = text[:budget]
-    if " " in cut:
-        cut = cut[: cut.rfind(" ")]
-    return cut.rstrip(",;:—- ") or text[:budget]
+    words = text.split(" ")
+    while words and length_of(" ".join(words)) > budget:
+        words.pop()
+    trimmed = " ".join(words).rstrip(",;:—- ")
+    return trimmed or text[:budget]
 
 
-def _shorten_slot(llm: LLMClient, name: str, text: str, budget: int) -> str:
+def _shorten_slot(llm: LLMClient, name: str, text: str, budget: int,
+                  length_of=len) -> str:
     """LLMs cannot count characters — never reject on budget, repair instead.
     One targeted rewrite attempt, then a hard word-boundary trim guarantee."""
     try:
@@ -105,29 +105,30 @@ def _shorten_slot(llm: LLMClient, name: str, text: str, budget: int) -> str:
             "quotes, no commentary. Preserve the meaning and any ⟦...⟧ "
             "placeholder tokens exactly.",
             f"Shorten to AT MOST {budget} characters (it is currently "
-            f"{len(text)} characters):\n{text}",
+            f"{length_of(text)} characters):\n{text}",
             max_tokens=200,
         ).strip().strip('"')
         # accept only if it fits and didn't drop a placeholder token
         placeholders_kept = all(tok in reply for tok in
                                 re.findall(r"⟦[A-Z]+_\d{3}⟧", text))
-        if reply and len(reply) <= budget and placeholders_kept:
+        looks_like_copy = bool(reply) and not reply.startswith("{")
+        if looks_like_copy and length_of(reply) <= budget and placeholders_kept:
             return reply
     except Exception:
         pass  # provider hiccup → deterministic fallback below
-    return _word_trim(text, budget)
+    return _word_trim(text, budget, length_of)
 
 
 def _repair_budgets(content: PosterContent, contract: TemplateContract,
-                    llm: LLMClient) -> None:
+                    llm: LLMClient, length_of=len) -> None:
     for name, slot in content.slots():
         budget_key = "body_point" if name.startswith("body_points") else name
         budget = contract.budget(budget_key)
         slot.text = " ".join(slot.text.split())
-        if len(slot.text) > budget:
-            slot.text = _shorten_slot(llm, name, slot.text, budget)
-            if len(slot.text) > budget:  # absolute guarantee
-                slot.text = _word_trim(slot.text, budget)
+        if length_of(slot.text) > budget:
+            slot.text = _shorten_slot(llm, name, slot.text, budget, length_of)
+            if length_of(slot.text) > budget:  # absolute guarantee
+                slot.text = _word_trim(slot.text, budget, length_of)
 
 
 _TARGETED_SYSTEM = """You revise ONLY the named slots of an existing poster JSON that failed review.
@@ -149,6 +150,7 @@ def generate_content(
     exemplar_block: str | None = None,
     previous: dict | None = None,
     fix_slots: list[str] | None = None,
+    length_of=len,  # effective length fn (post-rehydration measuring)
 ) -> tuple[PosterContent | None, list[str]]:
     """Returns (content, []) on success or (None, violations) for a retry edge.
 
@@ -199,7 +201,7 @@ def generate_content(
         return None, [f"schema mismatch: {exc}"]
 
     # budgets are repaired, never rejected — LLMs cannot count characters
-    _repair_budgets(content, contract, llm)
+    _repair_budgets(content, contract, llm, length_of)
 
     known = {cid for c in retrieved for cid in c.clause_ids}
     violations = content.validate(contract, known)
