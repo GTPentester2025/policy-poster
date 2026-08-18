@@ -270,6 +270,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                 409, "Redaction Auditor blocks egress: resolve findings first",
             )
         project.chunks = chunk_document(project.doc, project.ledger)
+        enriched = 0
+        if app.state.llm_settings.provider != "offline":
+            from ..enrichment import enrich_chunks
+
+            try:
+                enriched = enrich_chunks(project.chunks, _make_llm())
+            except Exception:
+                enriched = 0  # enrichment is best-effort
         embedder, source = make_embedder(app.state.llm_settings)
         db_dir = os.path.join(project.work_dir, "lancedb")
         try:
@@ -288,7 +296,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             project.index = None
             raise HTTPException(500, f"index validation failed: {validation.errors}")
         return {"chunks": len(project.chunks), "validated": True,
-                "embedding_source": source}
+                "embedding_source": source, "enriched_chunks": enriched}
 
     # -- Stage 3/4: angle + templates ---------------------------------------
 
@@ -327,11 +335,22 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                 edits: dict | None = None):
         import time as _time
 
+        from ..egress_log import LoggingLLM
+
+        run_dir = os.path.join(project.work_dir, "runs", run.run_id)
+        logging_llm = LoggingLLM(
+            _make_llm(), os.path.join(run_dir, "egress.jsonl"),
+            context={"run_id": run.run_id},
+        )
+
         def on_event(event: dict):
             event = dict(event)
             event["ts"] = _time.time()
             if event.get("type") == "node_start":
                 run.current_node = event.get("node")
+                logging_llm.context.update(
+                    node=event.get("node"), attempt=event.get("attempt"),
+                )
             run.events.append(event)
 
         def worker():
@@ -343,7 +362,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     all_chunks=project.chunks,
                     angle=run.angle,
                     contract=TEMPLATE_FAMILIES[run.template_family],
-                    llm=_make_llm(),
+                    llm=logging_llm,
                     work_dir=os.path.join(project.work_dir, "runs", run.run_id),
                     resume_from=resume_from,
                     state_overrides=edits,
@@ -472,6 +491,26 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     f"at {base_url}? is chromium installed?): {exc}",
                 )
         return FileResponse(out_path, filename=os.path.basename(out_path))
+
+    @app.get("/runs/{run_id}/calls")
+    def run_calls(run_id: str, node: str | None = None):
+        """Per-call egress log: exact (sanitised) prompts, responses, latency."""
+        from ..egress_log import read_egress_log
+
+        project, run = run_or_404(run_id)
+        path = os.path.join(project.work_dir, "runs", run.run_id, "egress.jsonl")
+        calls = read_egress_log(path)
+        if node:
+            calls = [c for c in calls if c.get("node") == node]
+        return calls[-300:]
+
+    @app.get("/runs/{run_id}/calls.jsonl")
+    def run_calls_download(run_id: str):
+        project, run = run_or_404(run_id)
+        path = os.path.join(project.work_dir, "runs", run.run_id, "egress.jsonl")
+        if not os.path.exists(path):
+            raise HTTPException(404, "no calls recorded")
+        return FileResponse(path, filename=f"prompt_chain_{run.run_id}.jsonl")
 
     @app.get("/runs/{run_id}/trace")
     def trace(run_id: str):
