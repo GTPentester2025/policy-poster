@@ -42,7 +42,13 @@ class PolicyDocument:
     root: ClauseNode
 
     def leaves(self) -> list[ClauseNode]:
-        return [n for n in self.root.walk() if n is not self.root and n.is_leaf()]
+        """Content leaves only. A childless heading node (empty section — a
+        heading with no body under it) is structure, not content: the chunker
+        never emits it, so it must not count as a clause requiring coverage."""
+        return [
+            n for n in self.root.walk()
+            if n is not self.root and n.is_leaf() and not n.heading
+        ]
 
     def find(self, clause_id: str) -> ClauseNode | None:
         for node in self.root.walk():
