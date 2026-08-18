@@ -89,7 +89,7 @@ def test_full_run_completes(setup):
 
 def test_generator_schema_failure_retries_then_halts(setup):
     doc, ledger, chunks, index, known, tmp_path = setup
-    bad = json.dumps({"eyebrow": {"text": "x" * 500, "citations": ["1.1"]}})
+    bad = json.dumps({"eyebrow": {"text": "HELLO", "citations": ["9.9.9"]}})
     # each node attempt = initial + in-node repair call → 6 bads for 3 attempts
     llm = MockLLM([
         sufficiency_ok(),

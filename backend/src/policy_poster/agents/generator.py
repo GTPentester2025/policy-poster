@@ -4,6 +4,7 @@ budgets, every slot cited to retrieved clauses. Free prose is rejected
 
 from __future__ import annotations
 
+import re
 import uuid
 
 from ..chunker import Chunk
@@ -58,6 +59,61 @@ def _build_prompt(angle: str, contract: TemplateContract, chunks: list[Chunk],
     return system, user
 
 
+def _word_trim(text: str, budget: int) -> str:
+    """Deterministic last-resort shorten: cut at a word boundary, no ellipsis
+    mid-clause weirdness, never invents content."""
+    text = " ".join(text.split())
+    if len(text) <= budget:
+        return text
+    cut = text[:budget]
+    if " " in cut:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip(",;:—- ") or text[:budget]
+
+
+def _shorten_slot(llm: LLMClient, name: str, text: str, budget: int) -> str:
+    """LLMs cannot count characters — never reject on budget, repair instead.
+    One targeted rewrite attempt, then a hard word-boundary trim guarantee."""
+    try:
+        reply = llm.complete(
+            "You shorten poster copy. Return ONLY the shortened line — no "
+            "quotes, no commentary. Preserve the meaning and any ⟦...⟧ "
+            "placeholder tokens exactly.",
+            f"Shorten to AT MOST {budget} characters (it is currently "
+            f"{len(text)} characters):\n{text}",
+            max_tokens=200,
+        ).strip().strip('"')
+        # accept only if it fits and didn't drop a placeholder token
+        placeholders_kept = all(tok in reply for tok in
+                                re.findall(r"⟦[A-Z]+_\d{3}⟧", text))
+        if reply and len(reply) <= budget and placeholders_kept:
+            return reply
+    except Exception:
+        pass  # provider hiccup → deterministic fallback below
+    return _word_trim(text, budget)
+
+
+def _repair_budgets(content: PosterContent, contract: TemplateContract,
+                    llm: LLMClient) -> None:
+    for name, slot in content.slots():
+        budget_key = "body_point" if name.startswith("body_points") else name
+        budget = contract.budget(budget_key)
+        slot.text = " ".join(slot.text.split())
+        if len(slot.text) > budget:
+            slot.text = _shorten_slot(llm, name, slot.text, budget)
+            if len(slot.text) > budget:  # absolute guarantee
+                slot.text = _word_trim(slot.text, budget)
+
+
+_TARGETED_SYSTEM = """You revise ONLY the named slots of an existing poster JSON that failed review.
+Every other slot must be returned EXACTLY as given, byte for byte.
+For each failing slot: either rewrite its text so it is directly supported by
+one of the provided policy excerpts and cite that clause_id, or keep the text
+and change its citations to the clause_ids that actually support it.
+Never invent facts. Keep ⟦...⟧ tokens exactly. Respond with the FULL poster
+JSON in the same schema."""
+
+
 def generate_content(
     angle: str,
     contract: TemplateContract,
@@ -66,9 +122,28 @@ def generate_content(
     poster_id: str | None = None,
     corrective: str | None = None,
     exemplar_block: str | None = None,
+    previous: dict | None = None,
+    fix_slots: list[str] | None = None,
 ) -> tuple[PosterContent | None, list[str]]:
-    """Returns (content, []) on success or (None, violations) for a retry edge."""
+    """Returns (content, []) on success or (None, violations) for a retry edge.
+
+    With `previous` + `fix_slots`, runs in targeted-repair mode: only the
+    failing slots are rewritten; everything that already passed is kept."""
     system, user = _build_prompt(angle, contract, retrieved, corrective, exemplar_block)
+    if previous is not None and fix_slots:
+        import json as _json
+
+        system = _TARGETED_SYSTEM
+        excerpts = "\n\n".join(
+            f"[clauses {', '.join(c.clause_ids)}] ({' > '.join(c.section_path)})\n{c.text}"
+            for c in retrieved
+        )
+        user = (
+            f"Current poster JSON:\n{_json.dumps(previous.get('content', previous))}\n\n"
+            f"Slots to fix: {', '.join(sorted(set(fix_slots)))}\n\n"
+            f"Reviewer findings:\n{corrective or 'see slots'}\n\n"
+            f"Policy excerpts (cite these clause_ids only):\n{excerpts}"
+        )
     raw = llm.complete(system, user, max_tokens=4096)
     data = extract_json(raw)
     if data is None:
@@ -98,6 +173,9 @@ def generate_content(
         )
     except (KeyError, TypeError) as exc:
         return None, [f"schema mismatch: {exc}"]
+
+    # budgets are repaired, never rejected — LLMs cannot count characters
+    _repair_budgets(content, contract, llm)
 
     known = {cid for c in retrieved for cid in c.clause_ids}
     violations = content.validate(contract, known)

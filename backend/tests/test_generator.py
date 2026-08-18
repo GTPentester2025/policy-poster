@@ -48,15 +48,41 @@ def test_happy_path(retrieved):
     assert content.angle == "urgency"
 
 
-def test_over_budget_returns_violations(retrieved):
+def test_over_budget_is_repaired_not_rejected(retrieved):
+    """LLMs can't count chars — budgets repair via shorten-or-trim, never fail."""
     payload = json.loads(good_payload())
-    payload["headline"]["text"] = "x" * 100
-    llm = MockLLM([json.dumps(payload)])
+    payload["headline"]["text"] = "Report every incident fast " * 6  # way over 48
+    llm = MockLLM([json.dumps(payload),
+                   "Report every incident fast"])  # shorten reply
     content, violations = generate_content(
         "urgency", DEFAULT_CONTRACT, retrieved, llm, poster_id="p1"
     )
-    assert content is None
-    assert any("headline" in v for v in violations)
+    assert violations == []
+    assert content is not None
+    assert len(content.headline.text) <= DEFAULT_CONTRACT.budget("headline")
+
+
+def test_budget_repair_falls_back_to_word_trim(retrieved):
+    payload = json.loads(good_payload())
+    payload["headline"]["text"] = "alpha bravo charlie delta echo foxtrot golf hotel india juliet"
+    llm = MockLLM([json.dumps(payload)])  # queue exhausted → deterministic trim
+    content, violations = generate_content(
+        "urgency", DEFAULT_CONTRACT, retrieved, llm, poster_id="p1"
+    )
+    assert violations == []
+    assert len(content.headline.text) <= 48
+    assert not content.headline.text.endswith(" ")
+
+
+def test_targeted_repair_mode_prompt(retrieved):
+    prev = {"content": {"headline": {"text": "Old", "citations": ["1.1"]}}}
+    llm = MockLLM([good_payload()])
+    generate_content("urgency", DEFAULT_CONTRACT, retrieved, llm,
+                     poster_id="p1", corrective="citation drift on headline",
+                     previous=prev, fix_slots=["headline"])
+    system, user = llm.calls[0]
+    assert "ONLY the named slots" in system
+    assert "headline" in user and "Old" in user
 
 
 def test_citation_outside_retrieved_set_rejected(retrieved):

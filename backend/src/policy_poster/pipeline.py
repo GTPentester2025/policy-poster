@@ -98,10 +98,26 @@ def build_poster_pipeline(
         exemplar_block = (
             feedback.exemplar_prompt_block(angle) if feedback is not None else None
         )
+        # targeted-repair mode: a QA gate rejected specific slots of an
+        # otherwise-passing poster → rewrite only those slots, keep the rest
+        previous, fix_slots = None, []
+        if ctx.corrective and ctx.state.get("content"):
+            for key in ("verdict_citation", "verdict_groundedness",
+                        "verdict_compliance"):
+                verdict = ctx.state.get(key)
+                if isinstance(verdict, dict) and verdict.get("verdict") == "reject":
+                    fix_slots += [
+                        f.get("slot") for f in verdict.get("findings", [])
+                        if f.get("slot")
+                    ]
+            if fix_slots:
+                previous = ctx.state["content"]
         content, violations = generate_content(
             angle, contract, _retrieved(ctx), llm,
             corrective=ctx.corrective,
             exemplar_block=exemplar_block,
+            previous=previous,
+            fix_slots=fix_slots or None,
         )
         if content is None and violations:
             # in-node repair pass: tell the model exactly what to fix before
