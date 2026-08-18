@@ -207,11 +207,16 @@ def test_make_embedder_selection(monkeypatch):
     emb, source = make_embedder(LLMSettings(provider="ollama", model="llama3"))
     assert isinstance(emb, OpenAICompatEmbedder)
     assert "nomic-embed-text" in source
-    # provider with no known embeddings endpoint → local fallback, labeled
+    # provider with no embeddings endpoint → semantic local fallback (fastembed)
+    emb, source = make_embedder(LLMSettings(provider="anthropic",
+                                            model="claude-opus-5"))
+    assert "local" in source
+    # forced hermetic mode → hashing
+    monkeypatch.setenv("POLICY_POSTER_EMBEDDER", "hashing")
     emb, source = make_embedder(LLMSettings(provider="anthropic",
                                             model="claude-opus-5"))
     assert isinstance(emb, HashingEmbedder)
-    assert "local" in source
+    monkeypatch.delenv("POLICY_POSTER_EMBEDDER")
     # gemini → Gemini embeddings
     from policy_poster.llm_providers import GeminiEmbedder
     emb, source = make_embedder(LLMSettings(provider="gemini", api_key="k"))
