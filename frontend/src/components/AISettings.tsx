@@ -4,6 +4,7 @@ interface LLMCurrent {
   provider: string;
   model: string;
   base_url: string;
+  embed_model?: string;
   api_key_set: boolean;
 }
 
@@ -37,6 +38,7 @@ export function AISettings({ onClose }: { onClose: () => void }) {
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [embedModel, setEmbedModel] = useState("");
   const [probe, setProbe] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -50,11 +52,12 @@ export function AISettings({ onClose }: { onClose: () => void }) {
         setProvider(data.current.provider);
         setModel(data.current.model);
         setBaseUrl(data.current.base_url);
+        setEmbedModel(data.current.embed_model ?? "");
       });
   }, []);
 
   const body = () => ({
-    provider, model, base_url: baseUrl, api_key: apiKey,
+    provider, model, base_url: baseUrl, api_key: apiKey, embed_model: embedModel,
   });
 
   const loadModels = async () => {
@@ -195,6 +198,18 @@ export function AISettings({ onClose }: { onClose: () => void }) {
                   value={baseUrl}
                   placeholder={defaultBase || "https://host/v1"}
                   onChange={(e) => setBaseUrl(e.target.value)}
+                />
+                <label className="block text-xs font-medium mt-3 mb-1">
+                  Embedding model{" "}
+                  <span className="font-normal text-ink-soft">
+                    (optional — powers retrieval; blank = local hashing)
+                  </span>
+                </label>
+                <input
+                  className="w-full border border-mist rounded px-2 py-1.5 text-sm bg-paper font-mono"
+                  value={embedModel}
+                  placeholder="e.g. text-embedding-3-small / nomic-embed-text"
+                  onChange={(e) => setEmbedModel(e.target.value)}
                 />
               </>
             )}

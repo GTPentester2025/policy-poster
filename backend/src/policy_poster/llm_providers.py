@@ -52,6 +52,7 @@ class LLMSettings:
     model: str = ""
     base_url: str = ""
     api_key: str = ""
+    embed_model: str = ""  # optional: /embeddings model on the same endpoint
     extra_headers: dict[str, str] = field(default_factory=dict)
 
     @classmethod
@@ -65,6 +66,7 @@ class LLMSettings:
             model=os.environ.get("POLICY_POSTER_LLM_MODEL", ""),
             base_url=os.environ.get("POLICY_POSTER_LLM_BASE_URL", ""),
             api_key=os.environ.get("POLICY_POSTER_LLM_API_KEY", ""),
+            embed_model=os.environ.get("POLICY_POSTER_EMBED_MODEL", ""),
         )
 
     def redacted(self) -> dict:
@@ -72,6 +74,7 @@ class LLMSettings:
             "provider": self.provider,
             "model": self.model,
             "base_url": self.base_url,
+            "embed_model": self.embed_model,
             "api_key_set": bool(self.api_key),
         }
 
@@ -247,6 +250,60 @@ def make_llm(settings: LLMSettings,
         )
 
     raise ValueError(f"unknown LLM provider: {provider!r} (known: {PROVIDERS})")
+
+
+class OpenAICompatEmbedder:
+    """Embeddings from the linked provider's /embeddings endpoint (OpenAI
+    dialect — OpenAI, Ollama /v1, LM Studio, vLLM, OpenRouter, ...). Vector
+    dimension is discovered on first call."""
+
+    def __init__(self, base_url: str, model: str, api_key: str | None = None,
+                 transport: httpx.BaseTransport | None = None) -> None:
+        self.base_url = normalize_base_url(base_url)
+        self.model = model
+        self.dim = 0  # set after first embed
+        self._headers = {"Content-Type": "application/json"}
+        if api_key:
+            self._headers["Authorization"] = f"Bearer {api_key}"
+        self._client = httpx.Client(timeout=_TIMEOUT, transport=transport)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        resp = self._client.post(
+            f"{self.base_url}/embeddings",
+            headers=self._headers,
+            json={"model": self.model, "input": texts},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(_error_detail(resp))
+        data = resp.json().get("data", [])
+        # OpenAI returns items with an "index" field; keep input order
+        data = sorted(data, key=lambda item: item.get("index", 0))
+        vectors = [item["embedding"] for item in data]
+        if vectors:
+            self.dim = len(vectors[0])
+        return vectors
+
+
+def make_embedder(settings: LLMSettings,
+                  transport: httpx.BaseTransport | None = None):
+    """Embedder for retrieval: the linked provider's /embeddings endpoint when
+    `embed_model` is set on an OpenAI-compatible provider; else fastembed via
+    POLICY_POSTER_EMBEDDER=fastembed; else the deterministic hashing embedder."""
+    from .embedder import HashingEmbedder
+
+    provider = (settings.provider or "").lower()
+    if settings.embed_model and provider in OPENAI_COMPAT_BASES:
+        base = settings.base_url or OPENAI_COMPAT_BASES[provider]
+        if base:
+            return OpenAICompatEmbedder(
+                base_url=base, model=settings.embed_model,
+                api_key=settings.api_key or None, transport=transport,
+            )
+    if os.environ.get("POLICY_POSTER_EMBEDDER") == "fastembed":
+        from .embedder import FastEmbedEmbedder
+
+        return FastEmbedEmbedder()
+    return HashingEmbedder()
 
 
 def _parse_models_payload(data) -> list[str]:

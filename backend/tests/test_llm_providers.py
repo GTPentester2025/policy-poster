@@ -175,6 +175,46 @@ def test_list_models_failure_never_raises():
     assert result["ok"] is False
 
 
+def test_provider_embedder_request_shape():
+    from policy_poster.llm_providers import OpenAICompatEmbedder
+
+    transport = Transport({"data": [
+        {"index": 1, "embedding": [0.3, 0.4]},
+        {"index": 0, "embedding": [0.1, 0.2]},
+    ]})
+    emb = OpenAICompatEmbedder(base_url="http://localhost:11434/v1",
+                               model="nomic-embed-text", api_key=None,
+                               transport=transport)
+    vectors = emb.embed(["a", "b"])
+    assert vectors == [[0.1, 0.2], [0.3, 0.4]]  # input order restored via index
+    assert emb.dim == 2
+    body = json.loads(transport.requests[0].content)
+    assert body == {"model": "nomic-embed-text", "input": ["a", "b"]}
+    assert str(transport.requests[0].url).endswith("/v1/embeddings")
+
+
+def test_make_embedder_selection(monkeypatch):
+    from policy_poster.embedder import HashingEmbedder
+    from policy_poster.llm_providers import OpenAICompatEmbedder, make_embedder
+
+    monkeypatch.delenv("POLICY_POSTER_EMBEDDER", raising=False)
+    # embed_model on an openai-compat provider → provider embeddings
+    emb = make_embedder(LLMSettings(provider="ollama", model="llama3",
+                                    embed_model="nomic-embed-text"))
+    assert isinstance(emb, OpenAICompatEmbedder)
+    # no embed_model → hashing default
+    assert isinstance(
+        make_embedder(LLMSettings(provider="ollama", model="llama3")),
+        HashingEmbedder,
+    )
+    # anthropic/gemini have no /embeddings — falls back
+    assert isinstance(
+        make_embedder(LLMSettings(provider="anthropic", model="claude-opus-5",
+                                  embed_model="ignored")),
+        HashingEmbedder,
+    )
+
+
 def test_connection_probe_ok():
     transport = Transport({"choices": [{"message": {"content": "pong"}}]})
     result = probe_connection(

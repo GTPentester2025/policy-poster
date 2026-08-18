@@ -18,7 +18,6 @@ from ..auditor import audit_sanitized
 from ..chunker import chunk_document
 from ..content import DEFAULT_CONTRACT, PosterContent, TemplateContract
 from ..docx_parser import parse_docx
-from ..embedder import Embedder, HashingEmbedder
 from ..index import PolicyIndex, validate_index
 from ..ner import suggest_entities
 from ..pdf_parser import parse_pdf
@@ -45,17 +44,12 @@ from ..llm_providers import (
     OPENAI_COMPAT_BASES,
     PROVIDERS,
     list_models,
+    make_embedder,
     make_llm,
     probe_connection,
 )
 
 
-def _make_embedder() -> Embedder:
-    if os.environ.get("POLICY_POSTER_EMBEDDER") == "fastembed":
-        from ..embedder import FastEmbedEmbedder
-
-        return FastEmbedEmbedder()
-    return HashingEmbedder()
 
 
 class TermIn(BaseModel):
@@ -77,6 +71,7 @@ class LLMSettingsIn(BaseModel):
     model: str = ""
     base_url: str = ""
     api_key: str = ""
+    embed_model: str = ""
 
 
 class ResumeIn(BaseModel):
@@ -276,7 +271,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             )
         project.chunks = chunk_document(project.doc, project.ledger)
         project.index = PolicyIndex.build(
-            project.chunks, _make_embedder(),
+            project.chunks, make_embedder(app.state.llm_settings),
             os.path.join(project.work_dir, "lancedb"),
         )
         validation = validate_index(project.doc, project.chunks, project.index)
@@ -491,6 +486,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             base_url=body.base_url.strip(),
             # empty api_key in the request keeps the stored one
             api_key=body.api_key.strip() or current.api_key,
+            embed_model=body.embed_model.strip(),
         )
         if new.provider not in PROVIDERS:
             raise HTTPException(400, f"unknown provider (known: {PROVIDERS})")
@@ -512,6 +508,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
             model=body.model.strip(),
             base_url=body.base_url.strip(),
             api_key=body.api_key.strip() or current.api_key,
+            embed_model=body.embed_model.strip(),
         )
         return list_models(settings)
 
@@ -524,6 +521,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                 model=body.model.strip(),
                 base_url=body.base_url.strip(),
                 api_key=body.api_key.strip() or current.api_key,
+                    embed_model=body.embed_model.strip(),
             )
         else:
             settings = app.state.llm_settings
