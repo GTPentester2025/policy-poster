@@ -13,7 +13,26 @@ from dataclasses import dataclass, field
 
 from .chunker import Chunk
 from .index import PolicyIndex
-from .llm import LLMClient, extract_json
+from .llm import LLMClient, complete_json
+
+SUFFICIENCY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "sufficient": {"type": "boolean"},
+        "keep": {"anyOf": [{"type": "string"},
+                            {"type": "array", "items": {"type": "string"}}]},
+        "discard": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"chunk_id": {"type": "string"},
+                            "reason": {"type": "string"}},
+            "required": ["chunk_id", "reason"],
+            "additionalProperties": False,
+        }},
+        "refined_query": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    },
+    "required": ["sufficient", "keep", "discard", "refined_query"],
+    "additionalProperties": False,
+}
 
 _CROSS_REF_RE = re.compile(
     r"(?:see|refer to|under|per)\s+(?:section|clause)?\s*(\d+(?:\.\d+)*)",
@@ -73,7 +92,7 @@ class AgenticRetriever:
             f"Retrieved excerpts:\n{excerpts}\n\n"
             "Do these excerpts fully answer the intent?"
         )
-        return extract_json(self._llm.complete(_SUFFICIENCY_SYSTEM, user))
+        return complete_json(self._llm, _SUFFICIENCY_SYSTEM, user, SUFFICIENCY_SCHEMA)
 
     def retrieve(self, intent: str) -> tuple[list[Chunk], RetrievalReport]:
         report = RetrievalReport(intent=intent)

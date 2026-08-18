@@ -9,7 +9,32 @@ import uuid
 
 from ..chunker import Chunk
 from ..content import PosterContent, Slot, TemplateContract
-from ..llm import LLMClient, extract_json
+from ..llm import LLMClient, complete_json, extract_json
+
+_SLOT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "text": {"type": "string"},
+        "citations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["text", "citations"],
+    "additionalProperties": False,
+}
+
+GENERATOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "eyebrow": _SLOT_SCHEMA, "headline": _SLOT_SCHEMA,
+        "subhead": _SLOT_SCHEMA,
+        "body_points": {"type": "array", "items": _SLOT_SCHEMA},
+        "callout": _SLOT_SCHEMA, "cta": _SLOT_SCHEMA,
+        "coverage_map": {"type": "object",
+                          "additionalProperties": {"type": "string"}},
+    },
+    "required": ["eyebrow", "headline", "subhead", "body_points",
+                 "callout", "cta", "coverage_map"],
+    "additionalProperties": False,
+}
 
 _SYSTEM_TEMPLATE = """You write internal awareness poster copy strictly grounded in provided policy excerpts.
 
@@ -144,8 +169,7 @@ def generate_content(
             f"Reviewer findings:\n{corrective or 'see slots'}\n\n"
             f"Policy excerpts (cite these clause_ids only):\n{excerpts}"
         )
-    raw = llm.complete(system, user, max_tokens=4096)
-    data = extract_json(raw)
+    data = complete_json(llm, system, user, GENERATOR_SCHEMA, max_tokens=4096)
     if data is None:
         return None, ["generator returned free prose instead of schema JSON"]
 

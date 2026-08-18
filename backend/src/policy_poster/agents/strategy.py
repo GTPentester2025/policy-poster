@@ -7,7 +7,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..index import PolicyIndex
-from ..llm import LLMClient, extract_json
+from ..llm import LLMClient, complete_json, extract_json
+
+ANGLES_SCHEMA = {
+    "type": "object",
+    "properties": {"angles": {"type": "array", "items": {
+        "type": "object",
+        "properties": {
+            "angle": {"type": "string"}, "rationale": {"type": "string"},
+            "clause_ids": {"type": "array", "items": {"type": "string"}},
+            "tone": {"type": "string"},
+        },
+        "required": ["angle", "rationale", "clause_ids", "tone"],
+        "additionalProperties": False,
+    }}},
+    "required": ["angles"],
+    "additionalProperties": False,
+}
 
 _SYSTEM = """You are a communications strategist for internal policy awareness campaigns.
 Given excerpts of a company policy, propose candidate campaign angles.

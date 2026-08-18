@@ -61,6 +61,52 @@ class AnthropicLLM:
             )
         return "".join(b.text for b in response.content if b.type == "text")
 
+    def complete_json(self, system: str, user: str, schema: dict,
+                      max_tokens: int = 4096):
+        import json as _json
+
+        response = self._client.beta.messages.create(
+            model=self._model,
+            max_tokens=max_tokens,
+            system=system,
+            output_config={"effort": self._effort,
+                           "format": {"type": "json_schema", "schema": schema}},
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
+            messages=[{"role": "user", "content": user}],
+        )
+        if response.stop_reason == "refusal":
+            raise RuntimeError("model declined request (refusal)")
+        text = "".join(b.text for b in response.content if b.type == "text")
+        try:
+            return _json.loads(text)
+        except _json.JSONDecodeError:
+            return extract_json(text)
+
+
+def complete_json(llm, system: str, user: str, schema: dict,
+                  max_tokens: int = 4096) -> dict | None:
+    """Provider-independent structured-output call.
+
+    Uses the client's native structured-output support when it exposes
+    `complete_json` (OpenAI-compatible response_format ladder, Gemini
+    responseSchema, Anthropic output_config); otherwise falls back to a
+    JSON-only instruction plus tolerant extraction."""
+    native = getattr(llm, "complete_json", None)
+    if callable(native):
+        try:
+            result = native(system, user, schema, max_tokens=max_tokens)
+            if result is not None:
+                return result
+        except Exception:
+            pass  # fall through to the prompt-based ladder
+    reply = llm.complete(
+        system + "\nRespond with ONLY a JSON object matching the required "
+                 "schema — no prose, no code fences.",
+        user, max_tokens=max_tokens,
+    )
+    return extract_json(reply)
+
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 

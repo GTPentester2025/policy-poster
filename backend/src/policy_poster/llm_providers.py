@@ -168,6 +168,71 @@ class OpenAICompatLLM:
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"unexpected response shape: {exc}: {str(data)[:300]}")
 
+    # -- native structured outputs: json_schema → json_object → plain --------
+
+    def complete_json(self, system: str, user: str, schema: dict,
+                      max_tokens: int = 4096):
+        import json as _json
+
+        from .llm import extract_json
+
+        mode = getattr(self, "_json_mode", "json_schema")
+        while True:
+            payload = {
+                "model": self.model,
+                self._token_param: max_tokens,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user + (
+                        "\nRespond in JSON." if mode != "plain" else
+                        "\nRespond with ONLY a JSON object — no prose."
+                    )},
+                ],
+            }
+            if mode == "json_schema":
+                payload["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": "output", "strict": True,
+                                    "schema": schema},
+                }
+            elif mode == "json_object":
+                payload["response_format"] = {"type": "json_object"}
+            resp = self._client.post(f"{self.base_url}/chat/completions",
+                                     headers=self._headers, json=payload)
+            if resp.status_code == 400 and mode != "plain" and (
+                "response_format" in resp.text or "json_schema" in resp.text
+                or "json_object" in resp.text
+            ):
+                mode = "json_object" if mode == "json_schema" else "plain"
+                self._json_mode = mode  # capability cached per client/model
+                continue
+            if self._is_token_param_error(resp):
+                self._token_param = (
+                    "max_completion_tokens"
+                    if self._token_param == "max_tokens" else "max_tokens"
+                )
+                continue
+            if resp.status_code != 200:
+                raise RuntimeError(_error_detail(resp))
+            self._json_mode = mode
+            content = resp.json()["choices"][0]["message"]["content"] or ""
+            try:
+                return _json.loads(content)
+            except _json.JSONDecodeError:
+                return extract_json(content)
+
+
+def _gemini_schema(schema):
+    """Gemini accepts an OpenAPI-style subset — strip unsupported keys."""
+    if isinstance(schema, dict):
+        return {
+            k: _gemini_schema(v) for k, v in schema.items()
+            if k not in ("additionalProperties", "$schema", "$defs", "const")
+        }
+    if isinstance(schema, list):
+        return [_gemini_schema(v) for v in schema]
+    return schema
+
 
 class GeminiLLM:
     """Google Gemini REST generateContent client (no SDK)."""
@@ -199,6 +264,35 @@ class GeminiLLM:
             return "".join(p.get("text", "") for p in parts)
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"unexpected response shape: {exc}: {str(data)[:300]}")
+
+    def complete_json(self, system: str, user: str, schema: dict,
+                      max_tokens: int = 4096):
+        import json as _json
+
+        from .llm import extract_json
+
+        resp = self._client.post(
+            f"{self.base_url}/models/{self.model}:generateContent",
+            headers={"x-goog-api-key": self._api_key,
+                     "Content-Type": "application/json"},
+            json={
+                "systemInstruction": {"parts": [{"text": system}]},
+                "contents": [{"role": "user", "parts": [{"text": user}]}],
+                "generationConfig": {
+                    "maxOutputTokens": max_tokens,
+                    "responseMimeType": "application/json",
+                    "responseSchema": _gemini_schema(schema),
+                },
+            },
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(_error_detail(resp))
+        parts = resp.json()["candidates"][0]["content"]["parts"]
+        text = "".join(p.get("text", "") for p in parts)
+        try:
+            return _json.loads(text)
+        except _json.JSONDecodeError:
+            return extract_json(text)
 
 
 def _error_detail(resp: httpx.Response) -> str:

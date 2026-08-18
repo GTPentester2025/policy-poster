@@ -12,7 +12,44 @@ from dataclasses import dataclass, field
 
 from ..chunker import Chunk
 from ..content import PosterContent, TemplateContract
-from ..llm import LLMClient, extract_json
+from ..llm import LLMClient, complete_json
+
+_CLAIMS_SCHEMA = {
+    "type": "object",
+    "properties": {"claims": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"slot": {"type": "string"},
+                        "supported": {"type": "boolean"},
+                        "reason": {"type": "string"}},
+        "required": ["slot", "supported", "reason"],
+        "additionalProperties": False}}},
+    "required": ["claims"], "additionalProperties": False,
+}
+
+_CITATIONS_SCHEMA = {
+    "type": "object",
+    "properties": {"citations": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"slot": {"type": "string"},
+                        "clause_id": {"type": "string"},
+                        "says_what_claimed": {"type": "boolean"},
+                        "reason": {"type": "string"}},
+        "required": ["slot", "clause_id", "says_what_claimed", "reason"],
+        "additionalProperties": False}}},
+    "required": ["citations"], "additionalProperties": False,
+}
+
+_VERDICT_SCHEMA = {
+    "type": "object",
+    "properties": {"verdict": {"type": "string"},
+                    "findings": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {"slot": {"type": "string"},
+                                        "detail": {"type": "string"}},
+                        "required": ["slot", "detail"],
+                        "additionalProperties": False}}},
+    "required": ["verdict", "findings"], "additionalProperties": False,
+}
 
 _UNBREAKABLE_WORD_LEN = 16
 
@@ -68,7 +105,7 @@ def check_groundedness(content: PosterContent, retrieved: list[Chunk], llm: LLMC
         f"Poster lines:\n{_slots_block(content)}\n\n"
         "Judge each line."
     )
-    data = extract_json(llm.complete(_GROUNDEDNESS_SYSTEM, user, max_tokens=2048))
+    data = complete_json(llm, _GROUNDEDNESS_SYSTEM, user, _CLAIMS_SCHEMA, max_tokens=2048)
     if data is None or not isinstance(data.get("claims"), list):
         return Verdict("groundedness", "reject",
                        [Finding("blocker", "verifier returned unparseable judgment")])
@@ -108,7 +145,7 @@ def check_citations(content: PosterContent, retrieved: list[Chunk], llm: LLMClie
         f"Poster lines with citations:\n{_slots_block(content)}\n\n"
         "Verify each citation."
     )
-    data = extract_json(llm.complete(_CITATION_SYSTEM, user, max_tokens=2048))
+    data = complete_json(llm, _CITATION_SYSTEM, user, _CITATIONS_SCHEMA, max_tokens=2048)
     if data is None or not isinstance(data.get("citations"), list):
         return Verdict("citation", "reject",
                        [Finding("blocker", "verifier returned unparseable judgment")])
@@ -172,7 +209,7 @@ def check_tone(content: PosterContent, angle: str, llm: LLMClient) -> Verdict:
         f"Chosen angle/tone: {angle}\n\n"
         f"Poster lines:\n{_slots_block(content)}"
     )
-    data = extract_json(llm.complete(_TONE_SYSTEM, user, max_tokens=1024)) or {}
+    data = complete_json(llm, _TONE_SYSTEM, user, _VERDICT_SCHEMA, max_tokens=1024) or {}
     findings = [
         Finding("minor", f.get("detail", ""), f.get("slot"))
         for f in data.get("findings", []) if isinstance(f, dict)
@@ -195,7 +232,7 @@ def check_compliance(content: PosterContent, retrieved: list[Chunk], llm: LLMCli
         f"Policy spans:\n{_spans_block(retrieved)}\n\n"
         f"Poster lines:\n{_slots_block(content)}"
     )
-    data = extract_json(llm.complete(_COMPLIANCE_SYSTEM, user, max_tokens=1024))
+    data = complete_json(llm, _COMPLIANCE_SYSTEM, user, _VERDICT_SCHEMA, max_tokens=1024)
     if data is None:
         return Verdict("compliance", "reject",
                        [Finding("blocker", "compliance judgment unparseable")])
