@@ -90,9 +90,10 @@ def test_full_run_completes(setup):
 def test_generator_schema_failure_retries_then_halts(setup):
     doc, ledger, chunks, index, known, tmp_path = setup
     bad = json.dumps({"eyebrow": {"text": "x" * 500, "citations": ["1.1"]}})
+    # each node attempt = initial + in-node repair call → 6 bads for 3 attempts
     llm = MockLLM([
         sufficiency_ok(),
-        bad, bad, bad,  # generator fails 3x → halt with diagnostic
+        bad, bad, bad, bad, bad, bad,
     ])
     outcome = run_poster_pipeline(
         run_id="run2", index=index, ledger=ledger, all_chunks=chunks,

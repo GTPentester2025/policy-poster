@@ -40,6 +40,14 @@ def propose_angles(index: PolicyIndex, llm: LLMClient, n: int = 4) -> list[Angle
     )
     data = extract_json(llm.complete(_SYSTEM, user, max_tokens=2048))
     if not data or not isinstance(data.get("angles"), list):
+        # one strict retry — smaller models often need the reminder
+        retry = llm.complete(
+            _SYSTEM,
+            user + '\n\nReturn ONLY the JSON object, starting with {"angles":',
+            max_tokens=2048,
+        )
+        data = extract_json(retry)
+    if not data or not isinstance(data.get("angles"), list):
         return []
 
     proposals: list[AngleProposal] = []

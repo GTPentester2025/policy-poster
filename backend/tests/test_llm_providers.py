@@ -198,21 +198,24 @@ def test_make_embedder_selection(monkeypatch):
     from policy_poster.llm_providers import OpenAICompatEmbedder, make_embedder
 
     monkeypatch.delenv("POLICY_POSTER_EMBEDDER", raising=False)
-    # embed_model on an openai-compat provider → provider embeddings
-    emb = make_embedder(LLMSettings(provider="ollama", model="llama3",
-                                    embed_model="nomic-embed-text"))
+    # explicit embed_model on an openai-compat provider → provider embeddings
+    emb, source = make_embedder(LLMSettings(provider="ollama", model="llama3",
+                                            embed_model="mxbai-embed-large"))
     assert isinstance(emb, OpenAICompatEmbedder)
-    # no embed_model → hashing default
-    assert isinstance(
-        make_embedder(LLMSettings(provider="ollama", model="llama3")),
-        HashingEmbedder,
-    )
-    # anthropic/gemini have no /embeddings — falls back
-    assert isinstance(
-        make_embedder(LLMSettings(provider="anthropic", model="claude-opus-5",
-                                  embed_model="ignored")),
-        HashingEmbedder,
-    )
+    assert "mxbai-embed-large" in source
+    # blank embed_model but the provider has a known default → auto AI embeddings
+    emb, source = make_embedder(LLMSettings(provider="ollama", model="llama3"))
+    assert isinstance(emb, OpenAICompatEmbedder)
+    assert "nomic-embed-text" in source
+    # provider with no known embeddings endpoint → local fallback, labeled
+    emb, source = make_embedder(LLMSettings(provider="anthropic",
+                                            model="claude-opus-5"))
+    assert isinstance(emb, HashingEmbedder)
+    assert "local" in source
+    # gemini → Gemini embeddings
+    from policy_poster.llm_providers import GeminiEmbedder
+    emb, source = make_embedder(LLMSettings(provider="gemini", api_key="k"))
+    assert isinstance(emb, GeminiEmbedder)
 
 
 def test_connection_probe_ok():

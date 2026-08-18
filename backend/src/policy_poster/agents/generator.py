@@ -79,6 +79,11 @@ def generate_content(
         return Slot(text=obj.get("text", ""), citations=list(obj.get("citations", [])))
 
     try:
+        body_points = [
+            Slot(text=" ".join(p.get("text", "").split()),
+                 citations=list(p.get("citations", [])))
+            for p in data.get("body_points", []) if isinstance(p, dict)
+        ][: contract.max_body_points]  # deterministic trim — never invents content
         content = PosterContent(
             poster_id=poster_id or str(uuid.uuid4()),
             angle=angle,
@@ -86,10 +91,7 @@ def generate_content(
             eyebrow=slot("eyebrow"),
             headline=slot("headline"),
             subhead=slot("subhead"),
-            body_points=[
-                Slot(text=p.get("text", ""), citations=list(p.get("citations", [])))
-                for p in data.get("body_points", []) if isinstance(p, dict)
-            ],
+            body_points=body_points,
             callout=slot("callout"),
             cta=slot("cta"),
             coverage_map=dict(data.get("coverage_map", {})),

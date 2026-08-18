@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api } from "../api";
-import type { AngleProposal, TemplateInfo } from "../types";
+import type { AnglesResponse, TemplateInfo } from "../types";
 
 export function AngleScreen({
   projectId,
@@ -9,33 +9,47 @@ export function AngleScreen({
   projectId: string;
   onLaunch: (runId: string, angle: string) => void;
 }) {
-  const [indexed, setIndexed] = useState<number | null>(null);
+  const [phase, setPhase] = useState<"indexing" | "angles" | "ready" | "index_error">("indexing");
+  const [chunks, setChunks] = useState<number | null>(null);
+  const [embeddingSource, setEmbeddingSource] = useState("");
   const [indexError, setIndexError] = useState<string | null>(null);
-  const [proposals, setProposals] = useState<AngleProposal[] | null>(null);
+  const [anglesResp, setAnglesResp] = useState<AnglesResponse | null>(null);
   const [templates, setTemplates] = useState<TemplateInfo[]>([]);
   const [angle, setAngle] = useState("");
   const [family, setFamily] = useState("default");
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const result = await api.buildIndex(projectId);
-        setIndexed(result.chunks);
-        const [a, t] = await Promise.all([api.angles(projectId), api.templates()]);
-        setProposals(a);
-        setTemplates(t);
-      } catch (e) {
-        setIndexError(String(e instanceof Error ? e.message : e));
-      }
-    })();
+  const boot = useCallback(async () => {
+    setPhase("indexing");
+    setIndexError(null);
+    try {
+      const result = await api.buildIndex(projectId);
+      setChunks(result.chunks);
+      setEmbeddingSource(result.embedding_source);
+      setPhase("angles");
+      const [a, t] = await Promise.all([api.angles(projectId), api.templates()]);
+      setAnglesResp(a);
+      setTemplates(t);
+      setPhase("ready");
+    } catch (e) {
+      setIndexError(String(e instanceof Error ? e.message : e));
+      setPhase("index_error");
+    }
   }, [projectId]);
 
-  if (indexError) {
+  useEffect(() => {
+    void boot();
+  }, [boot]);
+
+  if (phase === "index_error") {
     return (
       <div className="max-w-2xl mx-auto pt-16 px-8">
         <span className="stamp text-stamp">INDEX BLOCKED</span>
-        <p className="mt-3 text-sm text-ink-soft">{indexError}</p>
+        <p className="mt-3 text-sm break-words">{indexError}</p>
+        <button className="mt-4 text-sm bg-ink text-paper rounded px-4 py-2"
+                onClick={() => void boot()}>
+          ↻ Retry indexing
+        </button>
       </div>
     );
   }
@@ -43,15 +57,65 @@ export function AngleScreen({
   return (
     <div className="max-w-4xl mx-auto pt-10 px-8 pb-16">
       <h2 className="font-display text-2xl font-bold">Campaign angle</h2>
-      <p className="text-sm text-ink-soft mt-1">
-        {indexed === null
-          ? "Chunking and indexing the sanitized policy…"
-          : `Index validated — ${indexed} boundary-clean chunks. Pick a recommended angle or write your own.`}
-      </p>
 
-      {proposals && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-6">
-          {proposals.map((p) => (
+      {/* index status strip */}
+      <div className="mt-2 flex items-center gap-3 flex-wrap text-xs">
+        {phase === "indexing" ? (
+          <span className="text-ink-soft animate-pulse">
+            Chunking and embedding the sanitized policy…
+          </span>
+        ) : (
+          <>
+            <span className="stamp text-vault">INDEX VALIDATED</span>
+            <span className="font-mono text-ink-soft">{chunks} chunks</span>
+            <span
+              className={
+                "font-mono px-1.5 py-0.5 rounded " +
+                (embeddingSource.startsWith("local")
+                  ? "bg-mist text-ink-soft"
+                  : "bg-vault-soft text-vault")
+              }
+              title="What produced the dense vectors for retrieval"
+            >
+              embeddings: {embeddingSource}
+            </span>
+          </>
+        )}
+      </div>
+
+      <h3 className="font-semibold text-sm mt-6 mb-2">
+        AI-recommended angles{" "}
+        {anglesResp && (
+          <span className="font-mono text-[11px] text-ink-soft">
+            via {anglesResp.provider}
+          </span>
+        )}
+      </h3>
+
+      {phase !== "ready" && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3" aria-busy="true">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} className="h-24 bg-card border border-mist rounded-lg animate-pulse" />
+          ))}
+        </div>
+      )}
+
+      {phase === "ready" && anglesResp?.error && (
+        <div className="bg-stamp-soft border border-stamp/30 rounded-lg p-3 text-sm mb-3" role="alert">
+          <b>Angle recommendations failed:</b> {anglesResp.error}
+          <div className="mt-2 flex gap-2">
+            <button className="text-xs border border-mist bg-card rounded px-2.5 py-1"
+                    onClick={() => void boot()}>↻ Retry</button>
+          </div>
+          <p className="text-[11px] text-ink-soft mt-1">
+            You can still write your own angle below.
+          </p>
+        </div>
+      )}
+
+      {phase === "ready" && anglesResp && anglesResp.proposals.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {anglesResp.proposals.map((p) => (
             <button
               key={p.angle}
               className={
@@ -61,6 +125,7 @@ export function AngleScreen({
                   : "border-mist hover:border-brass")
               }
               onClick={() => setAngle(p.angle)}
+              aria-pressed={angle === p.angle}
             >
               <div className="font-semibold text-sm">{p.angle}</div>
               <div className="text-xs text-ink-soft mt-1">{p.rationale}</div>
@@ -98,6 +163,7 @@ export function AngleScreen({
                 : "border-mist hover:border-brass")
             }
             onClick={() => setFamily(t.family)}
+            aria-pressed={family === t.family}
           >
             <div className="flex gap-2 items-end mb-2" aria-hidden>
               <div className="w-16 h-9 bg-paper border border-mist rounded-sm border-l-4 border-l-brass" />
@@ -112,8 +178,8 @@ export function AngleScreen({
       </div>
 
       <button
-        className="mt-8 bg-vault text-white px-6 py-2.5 rounded font-medium disabled:opacity-40"
-        disabled={!angle.trim() || indexed === null || busy}
+        className="mt-8 bg-vault text-white px-6 py-2.5 rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+        disabled={!angle.trim() || phase !== "ready" || busy}
         onClick={async () => {
           setBusy(true);
           try {
@@ -124,7 +190,7 @@ export function AngleScreen({
           }
         }}
       >
-        {busy ? "Launching…" : "Generate posters"}
+        {busy ? "Launching…" : "Generate posters →"}
       </button>
     </div>
   );

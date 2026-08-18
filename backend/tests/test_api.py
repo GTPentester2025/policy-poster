@@ -91,11 +91,12 @@ def test_full_run_and_poster_citations(client, sample_docx):
     redact_fully(client, pid)
     assert client.post(f"/projects/{pid}/index").status_code == 200
 
-    angles = client.get(f"/projects/{pid}/angles").json()
-    assert angles
+    data = client.get(f"/projects/{pid}/angles").json()
+    assert data["proposals"]
+    assert data["error"] is None
 
     run_id = client.post(f"/projects/{pid}/runs", json={
-        "angle": angles[0]["angle"], "template_family": "default",
+        "angle": data["proposals"][0]["angle"], "template_family": "default",
     }).json()["run_id"]
     status = wait_run(client, run_id)
     assert status["status"] == "complete", status

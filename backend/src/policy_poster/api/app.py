@@ -270,15 +270,25 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                 409, "Redaction Auditor blocks egress: resolve findings first",
             )
         project.chunks = chunk_document(project.doc, project.ledger)
-        project.index = PolicyIndex.build(
-            project.chunks, make_embedder(app.state.llm_settings),
-            os.path.join(project.work_dir, "lancedb"),
-        )
+        embedder, source = make_embedder(app.state.llm_settings)
+        db_dir = os.path.join(project.work_dir, "lancedb")
+        try:
+            project.index = PolicyIndex.build(project.chunks, embedder, db_dir)
+        except Exception as exc:
+            # provider embeddings failed — fall back locally, but say so
+            from ..embedder import HashingEmbedder
+
+            if isinstance(embedder, HashingEmbedder):
+                raise HTTPException(502, f"indexing failed: {exc}")
+            source = f"local hashing (provider embeddings failed: {str(exc)[:200]})"
+            project.index = PolicyIndex.build(project.chunks, HashingEmbedder(), db_dir)
+        project.embedding_source = source
         validation = validate_index(project.doc, project.chunks, project.index)
         if not validation.passed:
             project.index = None
             raise HTTPException(500, f"index validation failed: {validation.errors}")
-        return {"chunks": len(project.chunks), "validated": True}
+        return {"chunks": len(project.chunks), "validated": True,
+                "embedding_source": source}
 
     # -- Stage 3/4: angle + templates ---------------------------------------
 
@@ -287,8 +297,19 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         project = project_or_404(project_id)
         if project.index is None:
             raise HTTPException(409, "build the index first")
-        proposals = propose_angles(project.index, _make_llm())
-        return [vars(p) for p in proposals]
+        settings: LLMSettings = app.state.llm_settings
+        try:
+            proposals = propose_angles(project.index, _make_llm())
+        except Exception as exc:
+            return {"proposals": [], "provider": settings.provider,
+                    "error": f"{settings.provider} failed: {str(exc)[:300]}"}
+        error = None
+        if not proposals and settings.provider != "offline":
+            error = (f"{settings.provider}/{settings.model} returned no usable "
+                     "angle JSON — try a stronger model or write your own angle")
+        return {"proposals": [vars(p) for p in proposals],
+                "provider": settings.provider, "error": error,
+                "embedding_source": project.embedding_source}
 
     @app.get("/templates")
     def templates():
@@ -304,6 +325,15 @@ def create_app(data_dir: str | None = None) -> FastAPI:
 
     def _launch(project: Project, run: Run, resume_from: str | None = None,
                 edits: dict | None = None):
+        import time as _time
+
+        def on_event(event: dict):
+            event = dict(event)
+            event["ts"] = _time.time()
+            if event.get("type") == "node_start":
+                run.current_node = event.get("node")
+            run.events.append(event)
+
         def worker():
             try:
                 outcome = run_poster_pipeline(
@@ -318,6 +348,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     resume_from=resume_from,
                     state_overrides=edits,
                     feedback=feedback_store,
+                    on_event=on_event,
                 )
                 run.outcome = outcome
                 run.status = outcome.status
@@ -346,9 +377,14 @@ def create_app(data_dir: str | None = None) -> FastAPI:
     @app.get("/runs/{run_id}")
     def run_status(run_id: str):
         _, run = run_or_404(run_id)
+        settings: LLMSettings = app.state.llm_settings
         payload = {"run_id": run.run_id, "status": run.status,
                    "angle": run.angle, "template_family": run.template_family,
-                   "error": run.error}
+                   "error": run.error,
+                   "provider": f"{settings.provider}"
+                               + (f"/{settings.model}" if settings.model else ""),
+                   "current_node": run.current_node,
+                   "events": run.events[-200:]}
         if run.outcome is not None:
             payload["state_keys"] = sorted(run.outcome.state.keys())
             if run.outcome.diagnostic is not None:
@@ -368,6 +404,8 @@ def create_app(data_dir: str | None = None) -> FastAPI:
         project, run = run_or_404(run_id)
         if run.status == "running":
             raise HTTPException(409, "run is still in progress")
+        run.events = []
+        run.current_node = None
         _launch(project, run, resume_from=body.from_node, edits=body.edits)
         return {"run_id": run.run_id, "resumed_from": body.from_node}
 

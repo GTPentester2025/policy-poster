@@ -115,12 +115,38 @@ export interface Diagnostic {
   retrieval_spans: unknown;
 }
 
+export interface RunEvent {
+  type: "node_start" | "node_end" | "node_error" | "rewind" | "halt";
+  ts: number;
+  node?: string;
+  agent?: string;
+  attempt?: number;
+  verdict?: string;
+  findings?: { detail?: string; slot?: string }[];
+  latency_ms?: number;
+  corrective?: string | null;
+  from?: string;
+  to?: string;
+  error?: string;
+  failures?: number;
+}
+
 export interface RunStatus {
   run_id: string;
   status: "running" | "complete" | "halted" | "error";
   angle: string;
   template_family: string;
   error: string | null;
+  provider?: string;
+  current_node?: string | null;
+  events?: RunEvent[];
   state_keys?: string[];
   diagnostic?: Diagnostic;
+}
+
+export interface AnglesResponse {
+  proposals: AngleProposal[];
+  provider: string;
+  error: string | null;
+  embedding_source?: string;
 }

@@ -74,7 +74,11 @@ export default function App() {
           />
         )}
         {step === "run" && runId && (
-          <RunScreen runId={runId} onComplete={onRunComplete} />
+          <RunScreen
+            runId={runId}
+            onComplete={onRunComplete}
+            onBackToAngle={() => setStep("angle")}
+          />
         )}
         {step === "poster" && runId && <PosterScreen runId={runId} />}
       </main>

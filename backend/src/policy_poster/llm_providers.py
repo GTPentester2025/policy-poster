@@ -284,26 +284,79 @@ class OpenAICompatEmbedder:
         return vectors
 
 
+class GeminiEmbedder:
+    """Google Gemini batchEmbedContents (text-embedding-004)."""
+
+    def __init__(self, api_key: str, model: str = "text-embedding-004",
+                 transport: httpx.BaseTransport | None = None) -> None:
+        self.model = model
+        self.dim = 0
+        self._api_key = api_key
+        self._client = httpx.Client(timeout=_TIMEOUT, transport=transport)
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        resp = self._client.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:batchEmbedContents",
+            headers={"x-goog-api-key": self._api_key,
+                     "Content-Type": "application/json"},
+            json={"requests": [
+                {"model": f"models/{self.model}",
+                 "content": {"parts": [{"text": t}]}}
+                for t in texts
+            ]},
+        )
+        if resp.status_code != 200:
+            raise RuntimeError(_error_detail(resp))
+        vectors = [e["values"] for e in resp.json().get("embeddings", [])]
+        if vectors:
+            self.dim = len(vectors[0])
+        return vectors
+
+
+# sensible default embedding model per provider when the user leaves it blank
+DEFAULT_EMBED_MODELS = {
+    "openai": "text-embedding-3-small",
+    "ollama": "nomic-embed-text",
+    "lmstudio": "text-embedding-nomic-embed-text-v1.5",
+    "mistral": "mistral-embed",
+    "together": "togethercomputer/m2-bert-80M-32k-retrieval",
+    "gemini": "text-embedding-004",
+}
+
+
 def make_embedder(settings: LLMSettings,
-                  transport: httpx.BaseTransport | None = None):
-    """Embedder for retrieval: the linked provider's /embeddings endpoint when
-    `embed_model` is set on an OpenAI-compatible provider; else fastembed via
-    POLICY_POSTER_EMBEDDER=fastembed; else the deterministic hashing embedder."""
+                  transport: httpx.BaseTransport | None = None) -> tuple[object, str]:
+    """Embedder for indexing/retrieval, routed through the linked AI provider
+    whenever possible. Returns (embedder, source_label) so the UI can show
+    exactly what powers the dense vectors.
+
+    Resolution: explicit `embed_model` → provider /embeddings; blank but the
+    provider has a known default embedding model → that; gemini → Gemini
+    embeddings; else fastembed (env opt-in) or the local hashing fallback."""
     from .embedder import HashingEmbedder
 
     provider = (settings.provider or "").lower()
-    if settings.embed_model and provider in OPENAI_COMPAT_BASES:
+    embed_model = settings.embed_model or DEFAULT_EMBED_MODELS.get(provider, "")
+
+    if provider == "gemini" and settings.api_key:
+        model = settings.embed_model or DEFAULT_EMBED_MODELS["gemini"]
+        return (GeminiEmbedder(api_key=settings.api_key, model=model,
+                               transport=transport),
+                f"{model} via gemini")
+
+    if embed_model and provider in OPENAI_COMPAT_BASES:
         base = settings.base_url or OPENAI_COMPAT_BASES[provider]
         if base:
-            return OpenAICompatEmbedder(
-                base_url=base, model=settings.embed_model,
+            return (OpenAICompatEmbedder(
+                base_url=base, model=embed_model,
                 api_key=settings.api_key or None, transport=transport,
-            )
+            ), f"{embed_model} via {provider}")
+
     if os.environ.get("POLICY_POSTER_EMBEDDER") == "fastembed":
         from .embedder import FastEmbedEmbedder
 
-        return FastEmbedEmbedder()
-    return HashingEmbedder()
+        return FastEmbedEmbedder(), "local fastembed (bge-small)"
+    return HashingEmbedder(), "local hashing (no AI)"
 
 
 def _parse_models_payload(data) -> list[str]:

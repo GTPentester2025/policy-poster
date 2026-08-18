@@ -1,5 +1,5 @@
 import type {
-  AngleProposal,
+  AnglesResponse,
   AuditReport,
   DocumentView,
   PosterResponse,
@@ -63,10 +63,11 @@ export const api = {
   acknowledge: (pid: string, surfaces: string[]) =>
     request(`/projects/${pid}/audit/acknowledge`, json({ surfaces })),
   buildIndex: (pid: string) =>
-    request<{ chunks: number; validated: boolean }>(`/projects/${pid}/index`, {
-      method: "POST",
-    }),
-  angles: (pid: string) => request<AngleProposal[]>(`/projects/${pid}/angles`),
+    request<{ chunks: number; validated: boolean; embedding_source: string }>(
+      `/projects/${pid}/index`,
+      { method: "POST" },
+    ),
+  angles: (pid: string) => request<AnglesResponse>(`/projects/${pid}/angles`),
   templates: () => request<TemplateInfo[]>("/templates"),
   startRun: (pid: string, angle: string, template_family: string) =>
     request<{ run_id: string }>(`/projects/${pid}/runs`, json({ angle, template_family })),

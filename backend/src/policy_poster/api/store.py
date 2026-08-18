@@ -25,6 +25,8 @@ class Run:
     outcome: RunOutcome | None = None
     error: str | None = None
     thread: threading.Thread | None = None
+    events: list = field(default_factory=list)  # live agent progress feed
+    current_node: str | None = None
 
 
 @dataclass
@@ -37,6 +39,7 @@ class Project:
     dismissed_suggestions: set[str] = field(default_factory=set)
     chunks: list[Chunk] = field(default_factory=list)
     index: PolicyIndex | None = None
+    embedding_source: str = ""
     runs: dict[str, Run] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 

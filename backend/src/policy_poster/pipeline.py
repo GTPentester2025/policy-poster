@@ -103,6 +103,21 @@ def build_poster_pipeline(
             corrective=ctx.corrective,
             exemplar_block=exemplar_block,
         )
+        if content is None and violations:
+            # in-node repair pass: tell the model exactly what to fix before
+            # escalating to a supervisor rewind (helps smaller models a lot)
+            repair_note = (
+                "Your previous attempt violated the schema. Fix EXACTLY these "
+                "issues and return the corrected full JSON:\n- "
+                + "\n- ".join(violations[:12])
+            )
+            if ctx.corrective:
+                repair_note = f"{ctx.corrective}\n\n{repair_note}"
+            content, violations = generate_content(
+                angle, contract, _retrieved(ctx), llm,
+                corrective=repair_note,
+                exemplar_block=exemplar_block,
+            )
         if content is None:
             return NodeResult(
                 verdict="reject",
@@ -200,6 +215,7 @@ def run_poster_pipeline(
     resume_from: str | None = None,
     state_overrides: dict | None = None,
     feedback=None,
+    on_event=None,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
@@ -210,5 +226,6 @@ def run_poster_pipeline(
         checkpoints=CheckpointStore(os.path.join(work_dir, "checkpoints")),
         trace=TraceStore(os.path.join(work_dir, "trace")),
         supervisor=Supervisor(),
+        on_event=on_event,
     )
     return orchestrator.run(run_id, state_overrides or {}, resume_from=resume_from)

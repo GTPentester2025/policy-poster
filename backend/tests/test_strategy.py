@@ -47,6 +47,7 @@ def test_ungrounded_proposal_dropped(index):
     assert [a.angle for a in angles] == ["grounded"]
 
 
-def test_unparseable_response_returns_empty(index):
-    llm = MockLLM(["not json at all"])
+def test_unparseable_response_retries_once_then_empty(index):
+    llm = MockLLM(["not json at all", "still not json"])
     assert propose_angles(index, llm, n=3) == []
+    assert len(llm.calls) == 2  # strict-JSON retry happened

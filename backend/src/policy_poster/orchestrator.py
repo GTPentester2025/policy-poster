@@ -150,12 +150,21 @@ class Supervisor:
 
 class Orchestrator:
     def __init__(self, nodes: list[Node], checkpoints: CheckpointStore,
-                 trace: TraceStore, supervisor: Supervisor) -> None:
+                 trace: TraceStore, supervisor: Supervisor,
+                 on_event=None) -> None:
         self.nodes = nodes
         self.checkpoints = checkpoints
         self.trace = trace
         self.supervisor = supervisor
         self._order = {n.name: i for i, n in enumerate(nodes)}
+        self._on_event = on_event
+
+    def _emit(self, event: dict) -> None:
+        if self._on_event is not None:
+            try:
+                self._on_event(event)
+            except Exception:
+                pass  # progress reporting must never break the run
 
     def _diagnostic(self, run_id: str, node: Node, state: dict,
                     failures: int, last_result: NodeResult) -> DiagnosticSnapshot:
@@ -208,9 +217,21 @@ class Orchestrator:
                 state=state, attempt=attempt,
                 corrective=corrective.pop(node.name, None),
             )
+            self._emit({"type": "node_start", "node": node.name,
+                        "agent": node.agent or node.name, "attempt": attempt,
+                        "corrective": ctx.corrective})
             t0 = time.monotonic()
-            result = node.fn(ctx)
+            try:
+                result = node.fn(ctx)
+            except Exception as exc:
+                self._emit({"type": "node_error", "node": node.name,
+                            "attempt": attempt, "error": str(exc)})
+                raise
             latency_ms = int((time.monotonic() - t0) * 1000)
+            self._emit({"type": "node_end", "node": node.name,
+                        "agent": node.agent or node.name, "attempt": attempt,
+                        "verdict": result.verdict, "findings": result.findings,
+                        "latency_ms": latency_ms})
 
             state.update(result.updates)
             self.checkpoints.save(run_id, node.name, attempt, {
@@ -235,6 +256,8 @@ class Orchestrator:
             if result.verdict == "reject" and node.blocking:
                 failures[node.name] = failures.get(node.name, 0) + 1
                 if failures[node.name] > self.supervisor.rewind_budget_per_node:
+                    self._emit({"type": "halt", "node": node.name,
+                                "failures": failures[node.name]})
                     return RunOutcome(
                         status="halted", state=state,
                         diagnostic=self._diagnostic(
@@ -255,6 +278,8 @@ class Orchestrator:
                     )
                 target = self.supervisor.diagnose_target(node)
                 corrective[target] = self.supervisor.corrective_instruction(node, result)
+                self._emit({"type": "rewind", "from": node.name, "to": target,
+                            "corrective": corrective[target]})
                 i = self._order[target]
                 continue
 
