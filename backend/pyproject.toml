@@ -12,13 +12,19 @@ dependencies = [
     "numpy>=1.26",
     "anthropic>=0.40",
     "python-pptx>=1.0.2",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.3",
+    "python-multipart>=0.0.32",
 ]
 
 [project.optional-dependencies]
 embeddings = ["fastembed>=0.4"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=8.0",
+]
 
 [build-system]
 requires = ["hatchling"]

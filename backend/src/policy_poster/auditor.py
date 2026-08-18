@@ -18,8 +18,9 @@ _PHONE_RE = re.compile(r"(?<!\w)(?:\+\d{1,3}[\s-]?)?(?:\d[\s-]?){9,12}\d(?!\w)")
 _PAN_RE = re.compile(r"\b[A-Z]{5}\d{4}[A-Z]\b")
 _AADHAAR_RE = re.compile(r"\b\d{4}\s?\d{4}\s?\d{4}\b")
 
-# run of >=2 Titlecase words (each 2+ chars, letters only)
-_TITLECASE_RUN_RE = re.compile(r"\b(?:[A-Z][a-z]+)(?:\s+[A-Z][a-z]+)+\b")
+# run of >=2 Titlecase words (each 2+ chars, letters only) on ONE line —
+# spanning a newline would pair a heading with the next line's first word
+_TITLECASE_RUN_RE = re.compile(r"\b(?:[A-Z][a-z]+)(?:[ \t]+[A-Z][a-z]+)+\b")
 _SENTENCE_START_RE = re.compile(r"(?:^|[.!?:]\s+|\n\s*)$")
 
 

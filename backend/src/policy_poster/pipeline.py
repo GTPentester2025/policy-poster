@@ -67,6 +67,20 @@ def build_poster_pipeline(
     runtime: dict = {"retrieved": [], "content": None}
     _RUNTIME[token] = runtime
 
+    def _retrieved(ctx) -> list[Chunk]:
+        # resume path: rebuild from checkpointed state when runtime is cold
+        if not runtime["retrieved"] and ctx.state.get("retrieved_chunk_ids"):
+            runtime["retrieved"] = [
+                c for c in (index.get(cid) for cid in ctx.state["retrieved_chunk_ids"])
+                if c is not None
+            ]
+        return runtime["retrieved"]
+
+    def _content(ctx) -> PosterContent | None:
+        if runtime["content"] is None and ctx.state.get("content"):
+            runtime["content"] = PosterContent.from_dict(ctx.state["content"])
+        return runtime["content"]
+
     def retrieve_fn(ctx):
         intent = angle if not ctx.corrective else f"{angle}. {ctx.corrective}"
         retrieved, report = AgenticRetriever(index, llm).retrieve(intent)
@@ -81,7 +95,7 @@ def build_poster_pipeline(
 
     def generate_fn(ctx):
         content, violations = generate_content(
-            angle, contract, runtime["retrieved"], llm,
+            angle, contract, _retrieved(ctx), llm,
             corrective=ctx.corrective,
         )
         if content is None:
@@ -98,25 +112,25 @@ def build_poster_pipeline(
         return node_fn
 
     def groundedness_fn(ctx):
-        return _verdict_result(check_groundedness(runtime["content"], runtime["retrieved"], llm))
+        return _verdict_result(check_groundedness(_content(ctx), _retrieved(ctx), llm))
 
     def citation_fn(ctx):
-        return _verdict_result(check_citations(runtime["content"], runtime["retrieved"], llm))
+        return _verdict_result(check_citations(_content(ctx), _retrieved(ctx), llm))
 
     def coverage_fn(ctx):
-        return _verdict_result(check_coverage([runtime["content"]], all_chunks))
+        return _verdict_result(check_coverage([_content(ctx)], all_chunks))
 
     def compliance_fn(ctx):
-        return _verdict_result(check_compliance(runtime["content"], runtime["retrieved"], llm))
+        return _verdict_result(check_compliance(_content(ctx), _retrieved(ctx), llm))
 
     def tone_fn(ctx):
-        return _verdict_result(check_tone(runtime["content"], angle, llm))
+        return _verdict_result(check_tone(_content(ctx), angle, llm))
 
     def layout_fn(ctx):
-        return _verdict_result(check_layout_fit(runtime["content"], contract))
+        return _verdict_result(check_layout_fit(_content(ctx), contract))
 
     def rehydrate_fn(ctx):
-        content: PosterContent = runtime["content"]
+        content: PosterContent = _content(ctx)
         entering = set(content.placeholders_present)
         result = rehydrate(
             content, ledger,
@@ -136,6 +150,13 @@ def build_poster_pipeline(
         })
 
     def export_fn(ctx):
+        if "rehydrated" not in runtime:
+            from .rehydration import RehydrationResult
+
+            runtime["rehydrated"] = RehydrationResult(
+                content=PosterContent.from_dict(ctx.state["rehydrated"]),
+                metadata={}, filename=ctx.state["export_filename"],
+            )
         result = runtime["rehydrated"]
         os.makedirs(work_dir, exist_ok=True)
         base = os.path.join(work_dir, result.filename)
@@ -171,6 +192,8 @@ def run_poster_pipeline(
     contract: TemplateContract,
     llm: LLMClient,
     work_dir: str,
+    resume_from: str | None = None,
+    state_overrides: dict | None = None,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
@@ -182,4 +205,4 @@ def run_poster_pipeline(
         trace=TraceStore(os.path.join(work_dir, "trace")),
         supervisor=Supervisor(),
     )
-    return orchestrator.run(run_id, {})
+    return orchestrator.run(run_id, state_overrides or {}, resume_from=resume_from)
