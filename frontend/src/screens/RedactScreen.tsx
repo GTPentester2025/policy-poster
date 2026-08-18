@@ -102,6 +102,23 @@ export function RedactScreen({
     await refresh();
   };
 
+  const surfaceOf = (detail: string) => detail.match(/'([^']+)'/)?.[1] ?? detail;
+
+  const acknowledgeAll = async () => {
+    const surfaces = (audit?.findings ?? [])
+      .filter((f) => f.severity === "warning" && !f.acknowledged)
+      .map((f) => surfaceOf(f.detail));
+    if (surfaces.length) await api.acknowledge(projectId, surfaces);
+    await refresh();
+  };
+
+  const dismissAllSuggestions = async () => {
+    if (suggestions.length) {
+      await api.dismissSuggestion(projectId, suggestions.map((s) => s.text));
+    }
+    await refresh();
+  };
+
   const hardFindings = audit?.findings.filter((f) => f.severity === "hard") ?? [];
   const warnings = audit?.findings.filter(
     (f) => f.severity === "warning" && !f.acknowledged,
@@ -165,9 +182,17 @@ export function RedactScreen({
         </div>
 
         <div className="bg-card border border-mist rounded-lg p-4">
-          <h3 className="font-semibold text-sm mb-3">
-            Suggested entities <span className="font-mono text-[11px] text-ink-soft">(local NER)</span>
-          </h3>
+          <div className="flex items-baseline justify-between mb-3">
+            <h3 className="font-semibold text-sm">
+              Suggested entities <span className="font-mono text-[11px] text-ink-soft">(local NER)</span>
+            </h3>
+            {suggestions.length > 0 && (
+              <button className="text-[11px] text-ink-soft hover:underline"
+                      onClick={() => void dismissAllSuggestions()}>
+                dismiss all
+              </button>
+            )}
+          </div>
           {suggestions.length === 0 && (
             <div className="text-xs text-ink-soft italic">No open suggestions.</div>
           )}
@@ -199,35 +224,51 @@ export function RedactScreen({
               ))}
             </ul>
           )}
-          {warnings.map((f, i) => {
-            const surface = f.detail.match(/'([^']+)'/)?.[1] ?? f.detail;
-            return (
-              <div key={i} className="text-xs flex items-center gap-2 mb-1">
-                <span className="text-brass">⚠ {f.detail}</span>
-                <button className="text-vault hover:underline shrink-0"
-                        onClick={() => void acknowledgeWarning(surface)}>
-                  not sensitive
-                </button>
-              </div>
-            );
-          })}
-          {clear ? (
-            <div className="mt-2 flex items-center gap-3">
-              <span className="stamp text-vault">CLEAR TO PROCEED</span>
-              <button className="bg-vault text-white text-sm px-4 py-1.5 rounded"
-                      onClick={onCleared}>
-                Build index →
+          {warnings.map((f, i) => (
+            <div key={i} className="text-xs flex items-center gap-2 mb-1">
+              <span className="text-brass">⚠ {f.detail}</span>
+              <button className="text-vault hover:underline shrink-0"
+                      onClick={() => void acknowledgeWarning(surfaceOf(f.detail))}>
+                not sensitive
               </button>
             </div>
-          ) : (
-            <div className="mt-2">
-              <span className="stamp text-stamp">EGRESS BLOCKED</span>
-              <p className="text-[11px] text-ink-soft mt-1">
-                Resolve hard findings, review warnings and high-confidence
-                suggestions to unlock the next stage.
-              </p>
-            </div>
+          ))}
+          {warnings.length > 1 && (
+            <button className="text-[11px] text-vault hover:underline mb-1"
+                    onClick={() => void acknowledgeAll()}>
+              mark all as not sensitive
+            </button>
           )}
+
+          {/* gate summary + always-visible continue */}
+          <div className="mt-3 pt-3 border-t border-mist">
+            {clear ? (
+              <span className="stamp text-vault">CLEAR TO PROCEED</span>
+            ) : (
+              <>
+                <span className="stamp text-stamp">EGRESS BLOCKED</span>
+                <ul className="text-[11px] text-ink-soft mt-2 flex flex-col gap-0.5">
+                  {hardFindings.length > 0 && (
+                    <li>✗ {hardFindings.length} hard finding{hardFindings.length > 1 ? "s" : ""} — mask the leaked value{hardFindings.length > 1 ? "s" : ""}</li>
+                  )}
+                  {warnings.length > 0 && (
+                    <li>⚠ {warnings.length} warning{warnings.length > 1 ? "s" : ""} — mask or mark “not sensitive”</li>
+                  )}
+                  {unreviewed > 0 && (
+                    <li>◌ {unreviewed} high-confidence suggestion{unreviewed > 1 ? "s" : ""} — mask or dismiss</li>
+                  )}
+                </ul>
+              </>
+            )}
+            <button
+              className="mt-3 w-full bg-vault text-white text-sm px-4 py-2 rounded disabled:opacity-40 disabled:cursor-not-allowed"
+              disabled={!clear}
+              title={clear ? undefined : "Resolve the items above to continue"}
+              onClick={onCleared}
+            >
+              Continue — build index →
+            </button>
+          </div>
         </div>
       </aside>
 
