@@ -28,6 +28,29 @@ _LABEL_CATEGORY = {
 
 _SPACY_LABELS = {"ORG", "PERSON", "GPE", "MONEY"}
 
+def _plausible_entity(surface: str) -> bool:
+    """Filter spaCy noise: bullet fragments, heading spans, generic phrases.
+    Real org/person names are short, single-line, and not list markers."""
+    if "\n" in surface or "•" in surface or "|" in surface:
+        return False
+    if len(surface) > 40 or len(surface.split()) > 4:
+        return False
+    if surface.rstrip().endswith((":", ",", "&", "-", "–", "—")):
+        return False
+    # generic policy-vocabulary phrases are not entities
+    generic = {"governance", "policy", "framework", "compliance", "response",
+               "assessment", "collaboration", "dialogue", "commitment",
+               "actions", "updates", "standards", "principles", "training"}
+    words = {w.lower().strip(".,;:") for w in surface.split()}
+    if words and words <= (generic | {"ai", "our", "the", "and", "of", "for",
+                                       "risk", "incident", "data", "active",
+                                       "open", "continuous", "industry",
+                                       "regulatory", "reliability",
+                                       "artificial", "intelligence"}):
+        return False
+    return True
+
+
 _nlp = None
 
 
@@ -72,6 +95,8 @@ def suggest_entities(text: str, ledger: RedactionLedger, nlp=None) -> list[Sugge
             continue
         surface = ent.text.strip()
         if not surface or "⟦" in surface:
+            continue
+        if not _plausible_entity(surface):
             continue
         found[(surface, ent.label_)].append((ent.start_char, ent.end_char))
 

@@ -232,6 +232,55 @@ def _plan_slots(angle: str, retrieved: list[Chunk], llm: LLMClient,
     return plan
 
 
+_POLISH_SYSTEM = """You are a copy editor doing a FINAL proofread of poster copy. Fix ONLY:
+- stray/duplicated/garbled words and grammatical artifacts
+- broken capitalisation or punctuation
+- awkward truncation remnants
+Do NOT add, remove, or change any fact, number, or obligation. Do NOT change
+the meaning. Keep ⟦...⟧ tokens exactly. If a line is already clean, return it
+unchanged. Respond with JSON:
+{"slots": {"<slot_name>": "corrected text", ...}} including EVERY slot."""
+
+_POLISH_SCHEMA = {
+    "type": "object",
+    "properties": {"slots": {"type": "object",
+                              "additionalProperties": {"type": "string"}}},
+    "required": ["slots"],
+    "additionalProperties": False,
+}
+
+
+def _polish(content: PosterContent, llm: LLMClient) -> None:
+    """One cheap proofread call to catch generation artifacts (stray words,
+    garbled phrases). Text-only — citations and facts are frozen; the
+    groundedness gate still runs afterwards as the safety net."""
+    listing = "\n".join(
+        f"{name}: {slot.text}" for name, slot in content.slots()
+    )
+    try:
+        data = complete_json(llm, _POLISH_SYSTEM, listing, _POLISH_SCHEMA,
+                             max_tokens=1024)
+    except Exception:
+        return
+    slots = (data or {}).get("slots")
+    if not isinstance(slots, dict):
+        return
+    for name, slot in content.slots():
+        fixed = slots.get(name)
+        if not isinstance(fixed, str) or not fixed.strip():
+            continue
+        fixed = " ".join(fixed.split())
+        # reject edits that drop placeholders or balloon the text
+        import re as _re2
+
+        if any(tok not in fixed for tok in
+               _re2.findall(r"⟦[A-Z]+_\d{3}⟧", slot.text)):
+            continue
+        if len(fixed) > len(slot.text) * 1.4 + 10:
+            continue
+        slot.text = fixed
+
+
 def generate_content(
     angle: str,
     contract: TemplateContract,
@@ -354,7 +403,11 @@ def generate_content(
             if i < len(plan["body_points"]):
                 point.citations = [plan["body_points"][i]["clause_id"]]
 
+    if mode == "clause_first":  # real-provider path gets the proofread pass
+        _polish(content, llm)
+
     # budgets are repaired, never rejected — LLMs cannot count characters
+    # (runs after polish so corrected text is re-measured)
     _repair_budgets(content, contract, llm, length_of)
 
     known = {cid for c in retrieved for cid in c.clause_ids}

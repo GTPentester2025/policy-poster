@@ -15,12 +15,19 @@ _BATCH = 40
 _SYSTEM = """For each policy chunk, write ONE short sentence situating it within the
 overall policy (what topic it governs, who it applies to). This context is
 prepended to the chunk before semantic indexing. Respond with JSON:
-{"contexts": {"<chunk_id>": "one sentence", ...}}"""
+{"contexts": [{"chunk_id": "...", "context": "one sentence"}, ...]}"""
 
+# array-of-objects shape: compatible with strict json_schema validators,
+# which reject additionalProperties-only maps
 _SCHEMA = {
     "type": "object",
-    "properties": {"contexts": {"type": "object",
-                                 "additionalProperties": {"type": "string"}}},
+    "properties": {"contexts": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"chunk_id": {"type": "string"},
+                        "context": {"type": "string"}},
+        "required": ["chunk_id", "context"],
+        "additionalProperties": False,
+    }}},
     "required": ["contexts"],
     "additionalProperties": False,
 }
@@ -39,8 +46,13 @@ def enrich_chunks(chunks: list[Chunk], llm: LLMClient) -> int:
             data = complete_json(llm, _SYSTEM, listing, _SCHEMA, max_tokens=4096)
         except Exception:
             data = None
-        contexts = (data or {}).get("contexts")
-        if not isinstance(contexts, dict):
+        raw = (data or {}).get("contexts")
+        if isinstance(raw, list):  # canonical array shape
+            contexts = {item.get("chunk_id"): item.get("context", "")
+                        for item in raw if isinstance(item, dict)}
+        elif isinstance(raw, dict):  # tolerated legacy map shape
+            contexts = raw
+        else:
             continue
         for chunk in batch:
             context = contexts.get(chunk.chunk_id, "").strip()
