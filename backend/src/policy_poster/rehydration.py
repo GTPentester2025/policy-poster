@@ -28,6 +28,9 @@ class RehydrationReport:
     errors: list[str]
 
 
+import re as _re
+
+
 def _rehydrate_text(text: str, mapping: dict[str, str], resolved: dict[str, str]) -> str:
     def swap(match):
         token = match.group(0)
@@ -36,7 +39,23 @@ def _rehydrate_text(text: str, mapping: dict[str, str], resolved: dict[str, str]
             return mapping[token]
         return token  # left in place — validator will catch it
 
-    return PLACEHOLDER_RE.sub(swap, text)
+    out = PLACEHOLDER_RE.sub(swap, text)
+
+    # tolerant pass: models sometimes mangle the ⟦⟧ brackets (mojibake,
+    # bracket substitution). Match the inner code with any single junk char
+    # on either side and resolve it anyway — codes only ever come from us.
+    for token, value in mapping.items():
+        code = token[1:-1]  # ORG_001
+        if code in out:
+            # junk = any single char that isn't ASCII-alphanumeric or space
+            # (mangled brackets are often non-ASCII letters like í)
+            pattern = _re.compile(
+                r"[^\sA-Za-z0-9]?\s?" + _re.escape(code) + r"\s?[^\sA-Za-z0-9]?"
+            )
+            out, n = pattern.subn(value, out)
+            if n:
+                resolved[token] = value
+    return out
 
 
 def rehydrate(content: PosterContent, ledger: RedactionLedger,
@@ -70,9 +89,13 @@ def validate_rehydration(result: RehydrationResult,
     surfaces += [(f"metadata.{k}", v) for k, v in result.metadata.items()
                  if isinstance(v, str)]
     surfaces += [(f"content.{name}", slot.text) for name, slot in result.content.slots()]
+    known_codes = [token[1:-1] for token in ledger.redaction_map]
     for where, text in surfaces:
         for token in PLACEHOLDER_RE.findall(text):
             errors.append(f"unresolved placeholder {token} remains in {where}")
+        for code in known_codes:  # mangled-bracket residue counts too
+            if _re.search(r"\b" + _re.escape(code) + r"\b", text):
+                errors.append(f"unresolved placeholder code {code} remains in {where}")
 
     # 2. every placeholder that entered has a resolved counterpart
     for token in sorted(entering_placeholders):

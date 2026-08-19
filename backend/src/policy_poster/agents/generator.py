@@ -63,9 +63,11 @@ PLAN_SCHEMA = {
 
 _PLAN_SYSTEM = """You plan an awareness poster before any copy is written. For each slot,
 choose the single clause the copy will be built from, and quote the exact
-fragment (verbatim, <=200 chars) that supports it. Pick the most important
-obligations for body_points (1-4 of them). Only use clause_ids that appear
-in the excerpts. JSON only:
+fragment (verbatim, <=200 chars) that supports it.
+PRIORITISE OBLIGATIONS: body_points must collectively carry as many distinct
+obligation clauses (must/shall/required/deadlines) as fit - up to 4 - before
+any descriptive clause. An obligation left out of the poster will fail the
+coverage gate. Only use clause_ids that appear in the excerpts. JSON only:
 {"plan": {"eyebrow": {"clause_id": "...", "quote": "..."}, "headline": {...},
   "subhead": {...}, "callout": {...}, "cta": {...},
   "body_points": [{"clause_id": "...", "quote": "..."}]}}"""
@@ -301,6 +303,25 @@ def generate_content(
         )
     except (KeyError, TypeError) as exc:
         return None, [f"schema mismatch: {exc}"]
+
+    # deterministic coverage completion: the map must account for every
+    # retrieved clause — cited ⇒ covered; uncited obligations ⇒ omitted
+    # (honest — the Coverage gate decides); the rest ⇒ not_applicable.
+    cited = {cid for _, s_ in content.slots() for cid in s_.citations}
+    if plan is not None:
+        cited |= {entry["clause_id"] for entry in
+                  [plan[k] for k in ("eyebrow", "headline", "subhead",
+                                      "callout", "cta")] + plan["body_points"]}
+    obligation_ids = {cid for c in retrieved if c.obligation_flag
+                      for cid in c.clause_ids}
+    for c in retrieved:
+        for cid in c.clause_ids:
+            if cid in cited:
+                content.coverage_map[cid] = "covered"
+            elif cid not in content.coverage_map:
+                content.coverage_map[cid] = (
+                    "omitted" if cid in obligation_ids else "not_applicable"
+                )
 
     if plan is not None:
         # C4 by construction: citations come from the plan, not the writer

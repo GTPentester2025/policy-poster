@@ -2,16 +2,58 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { PosterTemplate } from "../components/PosterTemplate";
 import { ChipifyString } from "../components/VaultText";
-import type { CitationInfo, PosterResponse } from "../types";
+import type { CitationInfo, PosterContentData, PosterResponse, TemplateInfo } from "../types";
 
-export function PosterScreen({ runId }: { runId: string }) {
+const SLOT_KEYS = ["eyebrow", "headline", "subhead", "callout", "cta"] as const;
+
+export function PosterScreen({
+  runId,
+  onReverify,
+}: {
+  runId: string;
+  onReverify?: () => void;
+}) {
   const [poster, setPoster] = useState<PosterResponse | null>(null);
   const [orientation, setOrientation] = useState<"landscape" | "portrait">("landscape");
   const [source, setSource] = useState<{ slot: string; citations: CitationInfo[] } | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<PosterContentData | null>(null);
+  const [template, setTemplate] = useState<TemplateInfo | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    void api.poster(runId).then(setPoster);
+    void api.poster(runId).then((p) => {
+      setPoster(p);
+      setDraft(structuredClone(p.sanitized_content));
+      void api.templates().then((ts) =>
+        setTemplate(ts.find((t) => t.family === p.content.template_family) ?? ts[0]),
+      );
+    });
   }, [runId]);
+
+  const budgetOf = (slot: string) => {
+    if (!template) return 999;
+    const key = slot.startsWith("body") ? "body_point" : slot;
+    return Math.min(
+      template.budgets_landscape[key] ?? 999,
+      template.budgets_portrait[key] ?? 999,
+    );
+  };
+
+  const saveEdits = async () => {
+    if (!draft) return;
+    setBusy(true);
+    try {
+      await fetch(`/api/runs/${runId}/edit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: draft }),
+      });
+      onReverify?.();
+    } finally {
+      setBusy(false);
+    }
+  };
 
   if (!poster) return <div className="pt-24 text-center">Loading poster…</div>;
 
@@ -54,6 +96,15 @@ export function PosterScreen({ runId }: { runId: string }) {
             >
               ⬇ PPTX ({orientation})
             </a>
+            <button
+              className={
+                "text-xs rounded px-3 py-1.5 border " +
+                (editing ? "bg-ink text-paper border-ink" : "border-mist bg-card")
+              }
+              onClick={() => setEditing(!editing)}
+            >
+              ✎ Edit copy
+            </button>
           </div>
         </div>
         <p className="text-xs text-ink-soft mb-3">
@@ -75,6 +126,83 @@ export function PosterScreen({ runId }: { runId: string }) {
       </section>
 
       <aside className="flex-1 min-w-[320px] sticky top-6">
+        {editing && draft && (
+          <div className="bg-card border border-vault/40 rounded-lg p-4 mb-4">
+            <h3 className="font-semibold text-sm mb-1">Edit copy</h3>
+            <p className="text-[11px] text-ink-soft mb-3">
+              Sanitized text (⟦…⟧ stays masked). Saving re-runs every QA gate
+              on your edit and records it for the learning store.
+            </p>
+            {SLOT_KEYS.map((key) => {
+              const budget = budgetOf(key);
+              const value = draft.content[key].text;
+              return (
+                <div key={key} className="mb-2">
+                  <label className="flex justify-between text-[11px] font-medium">
+                    <span>{key}</span>
+                    <span
+                      className={
+                        "font-mono " +
+                        (value.length > budget ? "text-stamp" : "text-ink-soft")
+                      }
+                    >
+                      {value.length}/{budget}
+                    </span>
+                  </label>
+                  <input
+                    className="w-full border border-mist rounded px-2 py-1 text-xs bg-paper"
+                    value={value}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        content: {
+                          ...draft.content,
+                          [key]: { ...draft.content[key], text: e.target.value },
+                        },
+                      })
+                    }
+                  />
+                </div>
+              );
+            })}
+            {draft.content.body_points.map((point, i) => (
+              <div key={i} className="mb-2">
+                <label className="flex justify-between text-[11px] font-medium">
+                  <span>body point {i + 1}</span>
+                  <span
+                    className={
+                      "font-mono " +
+                      (point.text.length > budgetOf("body_point")
+                        ? "text-stamp" : "text-ink-soft")
+                    }
+                  >
+                    {point.text.length}/{budgetOf("body_point")}
+                  </span>
+                </label>
+                <input
+                  className="w-full border border-mist rounded px-2 py-1 text-xs bg-paper"
+                  value={point.text}
+                  onChange={(e) => {
+                    const body_points = draft.content.body_points.map(
+                      (bp, j) => (j === i ? { ...bp, text: e.target.value } : bp),
+                    );
+                    setDraft({
+                      ...draft,
+                      content: { ...draft.content, body_points },
+                    });
+                  }}
+                />
+              </div>
+            ))}
+            <button
+              className="mt-2 w-full bg-vault text-white text-sm rounded px-3 py-1.5 disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void saveEdits()}
+            >
+              {busy ? "…" : "Save & re-verify →"}
+            </button>
+          </div>
+        )}
         <div className="bg-card border border-mist rounded-lg p-4">
           <h3 className="font-semibold text-sm mb-1">Source of record</h3>
           {!source && (

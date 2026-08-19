@@ -27,6 +27,7 @@ class Run:
     thread: threading.Thread | None = None
     events: list = field(default_factory=list)  # live agent progress feed
     current_node: str | None = None
+    cancel_requested: bool = False
 
 
 @dataclass

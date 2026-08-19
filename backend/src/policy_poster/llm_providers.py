@@ -28,6 +28,37 @@ from .llm_offline import OfflineLLM
 
 _TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
+
+def _post_with_retry(client: httpx.Client, url: str, *, headers: dict,
+                     json_body: dict, attempts: int = 3) -> httpx.Response:
+    """Retry 429/5xx/network with exponential backoff + jitter, honouring
+    Retry-After. 4xx (except 429) returns immediately."""
+    import random
+    import time as _time
+
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            resp = client.post(url, headers=headers, json=json_body)
+        except httpx.HTTPError as exc:
+            last_exc = exc
+            if attempt == attempts - 1:
+                raise RuntimeError(f"network error calling provider: {exc}")
+            _time.sleep(min(0.5 * (2 ** attempt) + random.random() * 0.3, 8))
+            continue
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt == attempts - 1:
+                return resp
+            retry_after = resp.headers.get("retry-after")
+            try:
+                delay = float(retry_after) if retry_after else 0.5 * (2 ** attempt)
+            except ValueError:
+                delay = 0.5 * (2 ** attempt)
+            _time.sleep(min(delay + random.random() * 0.3, 20))
+            continue
+        return resp
+    raise RuntimeError(f"provider unreachable: {last_exc}")
+
 # providers that speak the OpenAI chat-completions dialect, with default bases
 OPENAI_COMPAT_BASES = {
     "openai": "https://api.openai.com/v1",
@@ -131,10 +162,10 @@ class OpenAICompatLLM:
 
     def _post(self, system: str, user: str, max_tokens: int,
               token_param: str) -> httpx.Response:
-        return self._client.post(
-            f"{self.base_url}/chat/completions",
+        return _post_with_retry(
+            self._client, f"{self.base_url}/chat/completions",
             headers=self._headers,
-            json={
+            json_body={
                 "model": self.model,
                 token_param: max_tokens,
                 "messages": [
@@ -199,8 +230,9 @@ class OpenAICompatLLM:
                 }
             elif mode == "json_object":
                 payload["response_format"] = {"type": "json_object"}
-            resp = self._client.post(f"{self.base_url}/chat/completions",
-                                     headers=self._headers, json=payload)
+            resp = _post_with_retry(self._client,
+                                    f"{self.base_url}/chat/completions",
+                                    headers=self._headers, json_body=payload)
             if resp.status_code == 400 and mode != "plain" and (
                 "response_format" in resp.text or "json_schema" in resp.text
                 or "json_object" in resp.text

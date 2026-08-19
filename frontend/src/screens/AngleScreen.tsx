@@ -5,9 +5,11 @@ import type { AnglesResponse, TemplateInfo } from "../types";
 export function AngleScreen({
   projectId,
   onLaunch,
+  onLaunchCampaign,
 }: {
   projectId: string;
   onLaunch: (runId: string, angle: string) => void;
+  onLaunchCampaign?: (campaignId: string) => void;
 }) {
   const [phase, setPhase] = useState<"indexing" | "angles" | "ready" | "index_error">("indexing");
   const [chunks, setChunks] = useState<number | null>(null);
@@ -192,6 +194,29 @@ export function AngleScreen({
       >
         {busy ? "Launching…" : "Generate posters →"}
       </button>
+      {onLaunchCampaign && (
+        <button
+          className="mt-8 ml-3 border border-vault text-vault px-5 py-2.5 rounded font-medium disabled:opacity-40"
+          disabled={!angle.trim() || phase !== "ready" || busy}
+          title="One poster per group of obligations — nothing gets dropped"
+          onClick={async () => {
+            setBusy(true);
+            try {
+              const resp = await fetch(`/api/projects/${projectId}/campaigns`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ angle: angle.trim(), template_family: family }),
+              });
+              const data = await resp.json();
+              if (resp.ok) onLaunchCampaign(data.campaign_id);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          Generate as campaign (multi-poster)
+        </button>
+      )}
     </div>
   );
 }

@@ -13,11 +13,21 @@ from pathlib import Path
 
 
 class LoggingLLM:
+    BREAKER_THRESHOLD = 4  # consecutive provider failures → fail fast
+
     def __init__(self, inner, path: str, context: dict | None = None) -> None:
         self._inner = inner
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self.context: dict = context or {}
+        self._consecutive_failures = 0
+
+    def _breaker_check(self) -> None:
+        if self._consecutive_failures >= self.BREAKER_THRESHOLD:
+            raise RuntimeError(
+                f"circuit breaker open: {self._consecutive_failures} consecutive "
+                "provider failures — check the AI provider settings"
+            )
 
     def _write(self, record: dict) -> None:
         try:
@@ -27,12 +37,15 @@ class LoggingLLM:
             pass  # observability must never break the run
 
     def complete(self, system: str, user: str, max_tokens: int = 4096) -> str:
+        self._breaker_check()
         t0 = time.monotonic()
         try:
             out = self._inner.complete(system, user, max_tokens=max_tokens)
+            self._consecutive_failures = 0
             self._record("complete", system, user, t0, out, None)
             return out
         except Exception as exc:
+            self._consecutive_failures += 1
             self._record("complete", system, user, t0, None, str(exc))
             raise
 
@@ -40,12 +53,15 @@ class LoggingLLM:
                       max_tokens: int = 4096):
         from .llm import complete_json as _cj
 
+        self._breaker_check()
         t0 = time.monotonic()
         try:
             out = _cj(self._inner, system, user, schema, max_tokens=max_tokens)
+            self._consecutive_failures = 0
             self._record("complete_json", system, user, t0, out, None)
             return out
         except Exception as exc:
+            self._consecutive_failures += 1
             self._record("complete_json", system, user, t0, None, str(exc))
             raise
 

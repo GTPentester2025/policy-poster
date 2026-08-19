@@ -186,7 +186,8 @@ class Orchestrator:
         )
 
     def run(self, run_id: str, initial_state: dict,
-            resume_from: str | None = None) -> RunOutcome:
+            resume_from: str | None = None,
+            cancelled=None) -> RunOutcome:  # callable() -> bool
         started = time.monotonic()
         state = dict(initial_state)
         start_idx = 0
@@ -210,6 +211,9 @@ class Orchestrator:
         i = start_idx
 
         while i < len(self.nodes):
+            if cancelled is not None and cancelled():
+                self._emit({"type": "halt", "node": "cancelled", "failures": 0})
+                return RunOutcome(status="cancelled", state=state)
             node = self.nodes[i]
             attempts[node.name] = attempts.get(node.name, 0) + 1
             attempt = attempts[node.name]

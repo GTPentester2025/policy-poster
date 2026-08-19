@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { AISettings } from "./components/AISettings";
 import { StageRail, type StageState } from "./components/StageRail";
+import { CampaignScreen } from "./screens/CampaignScreen";
 import { AngleScreen } from "./screens/AngleScreen";
 import { PosterScreen } from "./screens/PosterScreen";
 import { RedactScreen } from "./screens/RedactScreen";
 import { RunScreen } from "./screens/RunScreen";
 import { UploadScreen } from "./screens/UploadScreen";
 
-type Step = "ingest" | "redact" | "angle" | "run" | "poster";
+type Step = "ingest" | "redact" | "angle" | "run" | "poster" | "campaign";
 
 export default function App() {
   const [step, setStep] = useState<Step>("ingest");
   const [projectId, setProjectId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [campaignId, setCampaignId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [provider, setProvider] = useState<string>("");
 
@@ -71,6 +73,19 @@ export default function App() {
               setRunId(rid);
               setStep("run");
             }}
+            onLaunchCampaign={(cid) => {
+              setCampaignId(cid);
+              setStep("campaign");
+            }}
+          />
+        )}
+        {step === "campaign" && campaignId && (
+          <CampaignScreen
+            campaignId={campaignId}
+            onViewPoster={(rid) => {
+              setRunId(rid);
+              setStep("poster");
+            }}
           />
         )}
         {step === "run" && runId && (
@@ -80,7 +95,9 @@ export default function App() {
             onBackToAngle={() => setStep("angle")}
           />
         )}
-        {step === "poster" && runId && <PosterScreen runId={runId} />}
+        {step === "poster" && runId && (
+          <PosterScreen runId={runId} onReverify={() => setStep("run")} />
+        )}
       </main>
     </div>
   );
@@ -94,7 +111,7 @@ function stageStatus(
   _alias?: string,
 ): StageState["status"] {
   const si = ORDER.indexOf(stage);
-  const ci = ORDER.indexOf(current);
+  const ci = ORDER.indexOf(current === "campaign" ? "run" : current);
   if (si < ci) return "passed";
   if (si === ci) return "active";
   return "todo";

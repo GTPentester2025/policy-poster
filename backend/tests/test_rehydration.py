@@ -55,6 +55,51 @@ def test_validator_catches_unresolved_placeholder():
     assert any("⟦SYSTEM_001⟧" in e for e in report.errors)
 
 
+def test_tolerant_rehydration_of_mangled_brackets():
+    """Models sometimes mangle ⟦⟧ — the inner code must still resolve."""
+    from policy_poster.content import PosterContent, Slot
+
+    c = PosterContent(
+        poster_id="p1", angle="a", template_family="default",
+        eyebrow=Slot("Data at í ORG_001 í", ["1.1"]),
+        headline=Slot("Protect [SYSTEM_001] access", ["1.1"]),
+        subhead=Slot("Normal ⟦ORG_001⟧ token too.", ["1.1"]),
+        body_points=[Slot("No placeholders here.", ["1.1"])],
+        callout=Slot("Plain.", ["1.1"]),
+        cta=Slot("Go", ["1.1"]),
+        coverage_map={"1.1": "covered"},
+    )
+    result = rehydrate(c, make_ledger(), metadata={}, filename="p.pptx")
+    assert result.content.eyebrow.text == "Data at Acme Corporation"
+    assert result.content.headline.text == "Protect VaultMaster access"
+    assert result.content.subhead.text == "Normal Acme Corporation token too."
+    report = validate_rehydration(result, {"⟦ORG_001⟧", "⟦SYSTEM_001⟧"},
+                                  ledger=make_ledger())
+    assert report.passed, report.errors
+
+
+def test_validator_catches_mangled_residue():
+    from policy_poster.content import PosterContent, Slot
+
+    ledger = RedactionLedger()
+    ledger.add("Acme Corporation", "org")
+    ledger.add("VaultMaster", "system")
+    c = PosterContent(
+        poster_id="p1", angle="a", template_family="default",
+        eyebrow=Slot("x", ["1.1"]), headline=Slot("y", ["1.1"]),
+        subhead=Slot("z", ["1.1"]),
+        body_points=[Slot("w", ["1.1"])],
+        callout=Slot("v", ["1.1"]), cta=Slot("u", ["1.1"]),
+        coverage_map={"1.1": "covered"},
+    )
+    result = rehydrate(c, ledger, metadata={}, filename="p.pptx")
+    # simulate residue the tolerant pass somehow missed
+    result.content.headline.text = "leak í SYSTEM_001 í here"
+    report = validate_rehydration(result, set(), ledger=ledger)
+    assert not report.passed
+    assert any("SYSTEM_001" in e for e in report.errors)
+
+
 def test_validator_catches_missing_entering_placeholder():
     result = rehydrate(sanitized_content(), make_ledger(), metadata={}, filename="p.pptx")
     report = validate_rehydration(result, entering_placeholders={"⟦PERSON_001⟧"},

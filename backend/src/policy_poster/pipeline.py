@@ -199,6 +199,11 @@ def build_poster_pipeline(
             "export_filename": result.filename,
         })
 
+    def _safe_filename(name: str) -> str:
+        import re as _re
+
+        return _re.sub(r"[^\w\-. ]", "_", name)[:120] or "poster"
+
     def export_fn(ctx):
         if "rehydrated" not in runtime:
             from .rehydration import RehydrationResult
@@ -209,7 +214,7 @@ def build_poster_pipeline(
             )
         result = runtime["rehydrated"]
         os.makedirs(work_dir, exist_ok=True)
-        base = os.path.join(work_dir, result.filename)
+        base = os.path.join(work_dir, _safe_filename(result.filename))
         paths = export_both_orientations(result.content, base)
         return NodeResult(updates={"exports": paths})
 
@@ -249,6 +254,7 @@ def run_poster_pipeline(
     generation_mode: str = "single_shot",
     verify_llm=None,
     utility_llm=None,
+    cancelled=None,
 ) -> RunOutcome:
     nodes = build_poster_pipeline(
         index=index, ledger=ledger, all_chunks=all_chunks, angle=angle,
@@ -263,4 +269,5 @@ def run_poster_pipeline(
         supervisor=Supervisor(),
         on_event=on_event,
     )
-    return orchestrator.run(run_id, state_overrides or {}, resume_from=resume_from)
+    return orchestrator.run(run_id, state_overrides or {},
+                            resume_from=resume_from, cancelled=cancelled)

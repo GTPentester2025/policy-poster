@@ -65,6 +65,18 @@ export function RunScreen({
 
   useEffect(() => {
     let alive = true;
+    let es: EventSource | null = null;
+
+    const finish = async () => {
+      const s = await api.runStatus(runId);
+      if (!alive) return;
+      setStatus(s);
+      if (s.status === "complete" && !doneRef.current) {
+        doneRef.current = true;
+        setTimeout(onComplete, 900); // let the last PASSED stamp land
+      }
+    };
+
     const poll = async () => {
       while (alive) {
         try {
@@ -73,7 +85,7 @@ export function RunScreen({
           setStatus(s);
           if (s.status === "complete" && !doneRef.current) {
             doneRef.current = true;
-            setTimeout(onComplete, 900); // let the last PASSED stamp land
+            setTimeout(onComplete, 900);
             return;
           }
           if (s.status !== "running") return;
@@ -83,9 +95,42 @@ export function RunScreen({
         await new Promise((r) => setTimeout(r, 700));
       }
     };
-    void poll();
+
+    // live SSE feed first; polling as fallback
+    void api.runStatus(runId).then((s) => {
+      if (!alive) return;
+      setStatus(s);
+      if (s.status !== "running") {
+        void finish();
+        return;
+      }
+      try {
+        es = new EventSource(`/api/runs/${runId}/stream`);
+        es.onmessage = (msg) => {
+          const event = JSON.parse(msg.data);
+          if (event.type === "run_status") {
+            es?.close();
+            void finish();
+            return;
+          }
+          setStatus((prev) =>
+            prev
+              ? { ...prev, events: [...(prev.events ?? []), event] }
+              : prev,
+          );
+        };
+        es.onerror = () => {
+          es?.close();
+          void poll();
+        };
+      } catch {
+        void poll();
+      }
+    });
+
     return () => {
       alive = false;
+      es?.close();
     };
   }, [runId, onComplete]);
 
@@ -113,9 +158,19 @@ export function RunScreen({
         <h2 className="font-display text-2xl font-bold">
           {running ? "Agents at work" : status.status === "complete" ? "Run complete" : "Run stopped"}
         </h2>
-        <span className="font-mono text-[11px] text-ink-soft">
-          {status.provider} · “{status.angle}”
-        </span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-[11px] text-ink-soft">
+            {status.provider} · “{status.angle}”
+          </span>
+          {running && (
+            <button
+              className="text-xs border border-stamp/40 text-stamp rounded px-2.5 py-1 hover:bg-stamp-soft"
+              onClick={() => void fetch(`/api/runs/${runId}/cancel`, { method: "POST" })}
+            >
+              ■ Cancel
+            </button>
+          )}
+        </div>
       </div>
 
       {/* provider hard error */}

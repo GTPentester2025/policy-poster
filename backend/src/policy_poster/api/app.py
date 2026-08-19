@@ -393,6 +393,7 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     ),
                     verify_llm=verify_llm,
                     utility_llm=utility_llm,
+                    cancelled=lambda: run.cancel_requested,
                 )
                 run.outcome = outcome
                 run.status = outcome.status
@@ -518,6 +519,133 @@ def create_app(data_dir: str | None = None) -> FastAPI:
                     f"at {base_url}? is chromium installed?): {exc}",
                 )
         return FileResponse(out_path, filename=os.path.basename(out_path))
+
+    @app.get("/healthz")
+    def healthz():
+        return {"ok": True, "provider": app.state.llm_settings.provider}
+
+    @app.post("/runs/{run_id}/cancel")
+    def cancel_run(run_id: str):
+        _, run = run_or_404(run_id)
+        if run.status != "running":
+            raise HTTPException(409, "run is not in progress")
+        run.cancel_requested = True
+        return {"cancelling": run.run_id}
+
+    @app.get("/runs/{run_id}/stream")
+    def run_stream(run_id: str):
+        """Live SSE feed of run events (B1). Poll endpoint remains as fallback."""
+        import json as _sse_json
+        import time as _sse_time
+
+        from fastapi.responses import StreamingResponse
+
+        _, run = run_or_404(run_id)
+
+        def gen():
+            cursor = 0
+            idle = 0
+            while True:
+                events = run.events
+                while cursor < len(events):
+                    yield f"data: {_sse_json.dumps(events[cursor], default=str)}\n\n"
+                    cursor += 1
+                    idle = 0
+                if run.status != "running":
+                    payload = {"type": "run_status", "status": run.status,
+                               "error": run.error}
+                    yield f"data: {_sse_json.dumps(payload)}\n\n"
+                    return
+                idle += 1
+                if idle % 25 == 0:
+                    yield ": heartbeat\n\n"
+                _sse_time.sleep(0.4)
+
+        return StreamingResponse(gen(), media_type="text/event-stream")
+
+    @app.post("/runs/{run_id}/edit")
+    def edit_poster(run_id: str, body: dict):
+        """B3: inline copy edit → record feedback → re-run the QA gates only."""
+        project, run = run_or_404(run_id)
+        if run.status == "running":
+            raise HTTPException(409, "run is still in progress")
+        if run.outcome is None or "content" not in run.outcome.state:
+            raise HTTPException(409, "no content to edit")
+        try:
+            edited = PosterContent.from_dict(body["content"])
+        except Exception as exc:
+            raise HTTPException(400, f"invalid poster content: {exc}")
+        # capture the user's corrections for the learning store
+        old = PosterContent.from_dict(run.outcome.state["content"])
+        for (name, old_slot), (_, new_slot) in zip(old.slots(), edited.slots()):
+            if old_slot.text != new_slot.text:
+                feedback_store.record(FeedbackEntry(
+                    kind="user_edit", policy_type=project.project_id[:8],
+                    angle=run.angle, before=old_slot.text, after=new_slot.text,
+                    note=f"inline edit of {name}",
+                ))
+        run.events = []
+        run.current_node = None
+        run.cancel_requested = False
+        _launch(project, run, resume_from="qa_groundedness",
+                edits={"content": edited.to_dict()})
+        return {"run_id": run.run_id, "reverifying": True}
+
+    # -- B4: coverage-driven campaigns (poster sets) ------------------------
+
+    app.state.campaigns = {}
+
+    @app.post("/projects/{project_id}/campaigns")
+    def start_campaign(project_id: str, body: RunIn):
+        project = project_or_404(project_id)
+        if project.index is None:
+            raise HTTPException(409, "build the index first")
+        obligation_chunks = [c for c in project.chunks if c.obligation_flag]
+        if not obligation_chunks:
+            raise HTTPException(409, "no obligations found — a single poster suffices")
+        per_poster = 4
+        groups: list[list] = []
+        for i in range(0, len(obligation_chunks), per_poster):
+            groups.append(obligation_chunks[i:i + per_poster])
+        campaign_id = str(uuid.uuid4())
+        run_ids = []
+        for i, group in enumerate(groups):
+            clause_ids = sorted({cid for c in group for cid in c.clause_ids})
+            focus = (f"{body.angle}. This poster of the campaign must cover "
+                     f"clauses {', '.join(clause_ids)}.")
+            run = Run(run_id=str(uuid.uuid4()), angle=focus,
+                      template_family=body.template_family)
+            project.runs[run.run_id] = run
+            store.save_run(project, run)
+            _launch(project, run)
+            run_ids.append(run.run_id)
+        app.state.campaigns[campaign_id] = {
+            "project_id": project_id, "angle": body.angle, "run_ids": run_ids,
+        }
+        return {"campaign_id": campaign_id, "run_ids": run_ids,
+                "posters": len(run_ids)}
+
+    @app.get("/campaigns/{campaign_id}")
+    def campaign_status(campaign_id: str):
+        campaign = app.state.campaigns.get(campaign_id)
+        if campaign is None:
+            raise HTTPException(404, "campaign not found")
+        project = project_or_404(campaign["project_id"])
+        runs = []
+        merged_coverage: dict = {}
+        for rid in campaign["run_ids"]:
+            run = project.runs.get(rid)
+            if run is None:
+                continue
+            entry = {"run_id": rid, "status": run.status, "angle": run.angle}
+            if run.outcome and "content" in run.outcome.state:
+                coverage = run.outcome.state["content"].get("coverage_map", {})
+                for cid, state in coverage.items():
+                    if state in ("covered", "partial"):
+                        merged_coverage[cid] = state
+            runs.append(entry)
+        return {"campaign_id": campaign_id, "angle": campaign["angle"],
+                "runs": runs, "merged_coverage": merged_coverage}
 
     @app.get("/runs/{run_id}/calls")
     def run_calls(run_id: str, node: str | None = None):
