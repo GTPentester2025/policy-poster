@@ -256,10 +256,12 @@ _EDITORIAL_SCHEMA = {
 _EDITORIAL_SYSTEM = """You are an editorial reviewer for internal policy posters, producing two
 independent verdicts in one pass.
 
-COMPLIANCE (blocking): reject copy that overstates the policy into legal
-overreach, softens a mandatory obligation (must/shall becoming should/try),
-or invents a consequence not present in the policy spans. Example: span says
-"must be reported within 1 hour", line says "try to report soon" -> reject.
+COMPLIANCE (blocking): reject ONLY for genuine violations — copy that
+overstates the policy into legal overreach, softens a mandatory obligation
+(must/shall becoming should/try), or invents a consequence not present in the
+policy spans. Example: span says "must be reported within 1 hour", line says
+"try to report soon" -> reject. Style, truncation, redundancy, or phrasing
+concerns belong under TONE, never under compliance.
 
 TONE (advisory only, never blocks): readability, employee-appropriate
 register, adherence to the chosen angle, no jargon, no redundancy between
@@ -288,9 +290,12 @@ def check_editorial(content: PosterContent, retrieved: list[Chunk],
             Verdict("tone", "pass"),
         )
     comp = data.get("compliance") or {}
-    comp_findings = [Finding("blocker", f.get("detail", ""), f.get("slot"))
+    # the model's own verdict decides blocking; findings attached to a "pass"
+    # verdict are advisory notes, not violations (prevents advisory loops)
+    comp_verdict = "reject" if comp.get("verdict") == "reject" else "pass"
+    severity = "blocker" if comp_verdict == "reject" else "minor"
+    comp_findings = [Finding(severity, f.get("detail", ""), f.get("slot"))
                      for f in comp.get("findings", []) if isinstance(f, dict)]
-    comp_verdict = "reject" if comp.get("verdict") == "reject" or comp_findings else "pass"
     tone = data.get("tone") or {}
     tone_findings = [Finding("minor", f.get("detail", ""), f.get("slot"))
                      for f in tone.get("findings", []) if isinstance(f, dict)]

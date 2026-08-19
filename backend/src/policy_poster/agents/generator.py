@@ -129,12 +129,19 @@ def _build_prompt(angle: str, contract: TemplateContract, chunks: list[Chunk],
     return system, user
 
 
+_DANGLING = {"for", "to", "and", "or", "the", "a", "an", "of", "with", "at",
+             "by", "in", "on", "is", "are", "be", "must", "your", "our"}
+
+
 def _word_trim(text: str, budget: int, length_of=len) -> str:
     """Deterministic last-resort shorten: drop trailing words until the
-    EFFECTIVE (post-rehydration) length fits. Never invents content."""
+    EFFECTIVE (post-rehydration) length fits, then drop dangling function
+    words so the line doesn't end mid-phrase. Never invents content."""
     text = " ".join(text.split())
     words = text.split(" ")
     while words and length_of(" ".join(words)) > budget:
+        words.pop()
+    while words and words[-1].lower().strip(".,;:") in _DANGLING:
         words.pop()
     trimmed = " ".join(words).rstrip(",;:—- ")
     return trimmed or text[:budget]
@@ -159,6 +166,19 @@ def _shorten_slot(llm: LLMClient, name: str, text: str, budget: int,
         looks_like_copy = bool(reply) and not reply.startswith("{")
         if looks_like_copy and length_of(reply) <= budget and placeholders_kept:
             return reply
+        # second, more aggressive attempt: full rewrite, complete sentence
+        reply2 = llm.complete(
+            "You shorten poster copy. Return ONLY the shortened line — no "
+            "quotes, no JSON. It must be a COMPLETE phrase, never cut "
+            "mid-sentence. Drop secondary details to make it fit.",
+            f"Rewrite in AT MOST {max(budget - 6, 8)} characters:\n{text}",
+            max_tokens=120,
+        ).strip().strip('"')
+        if (reply2 and not reply2.startswith("{")
+                and length_of(reply2) <= budget
+                and all(tok in reply2 for tok in
+                        re.findall(r"⟦[A-Z]+_\d{3}⟧", text))):
+            return reply2
     except Exception:
         pass  # provider hiccup → deterministic fallback below
     return _word_trim(text, budget, length_of)
