@@ -114,10 +114,23 @@ def test_coverage_flags_omitted_obligation(retrieved):
     assert any("2.1" in f.detail for f in verdict.findings)
 
 
-def test_coverage_recommends_more_posters_when_capacity_exceeded(retrieved):
+def test_explicit_omission_is_flagged_not_blocked(retrieved):
+    """Spec: no SILENT drops. An explicitly-omitted obligation is flagged and
+    triggers a campaign recommendation, but doesn't dead-end the run."""
     omitted = content(coverage_map={"1.1": "covered", "2.1": "omitted"})
     verdict = check_coverage([omitted], retrieved)
-    assert verdict.verdict == "reject"
+    assert verdict.verdict == "pass"
+    assert any("explicitly omitted" in f.detail for f in verdict.findings)
+    assert any("additional poster" in f.detail.lower() for f in verdict.findings)
+
+
+def test_out_of_scope_obligations_are_advisory(retrieved):
+    # retrieval scoped to reporting only → retention obligation is out of scope
+    reporting_chunk = next(c for c in retrieved if "reported" in c.text)
+    poster = content(coverage_map={"1.1": "covered"})
+    verdict = check_coverage([poster], retrieved,
+                             retrieved_ids={reporting_chunk.chunk_id})
+    assert verdict.verdict == "pass"
     assert any("additional poster" in f.detail.lower() for f in verdict.findings)
 
 

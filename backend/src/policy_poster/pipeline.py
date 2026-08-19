@@ -167,7 +167,10 @@ def build_poster_pipeline(
         return _verdict_result(check_citations(_content(ctx), _retrieved(ctx), verify_llm))
 
     def coverage_fn(ctx):
-        return _verdict_result(check_coverage([_content(ctx)], all_chunks))
+        retrieved_ids = set(ctx.state.get("retrieved_chunk_ids", []))
+        return _verdict_result(check_coverage(
+            [_content(ctx)], all_chunks, retrieved_ids=retrieved_ids or None,
+        ))
 
     def editorial_fn(ctx):
         compliance, tone = check_editorial(_content(ctx), _retrieved(ctx), angle, verify_llm)

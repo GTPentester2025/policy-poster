@@ -204,10 +204,22 @@ def check_citations(content: PosterContent, retrieved: list[Chunk], llm: LLMClie
 
 # -- Coverage / Completeness Agent (BLOCKING) --------------------------------
 
-def check_coverage(posters: list[PosterContent], all_chunks: list[Chunk]) -> Verdict:
-    """Deterministic: every obligation-flagged clause must be addressed
-    (covered/partial/not_applicable) across the campaign. Omissions are
-    blockers; when a poster can't carry the whole policy, recommend more."""
+def check_coverage(posters: list[PosterContent], all_chunks: list[Chunk],
+                   retrieved_ids: set[str] | None = None) -> Verdict:
+    """Deterministic. The spec's rule is that no obligation may be SILENTLY
+    dropped. Three tiers:
+    - missing from the coverage_map entirely → silent drop → BLOCKER.
+    - explicitly marked "omitted" → flagged, not silent → advisory finding
+      plus a recommendation for additional posters (a single poster cannot
+      physically carry every obligation of a large policy).
+    - obligation outside the retrieval scope → out of scope for this angle →
+      advisory note only (`retrieved_ids` = chunk_ids the angle retrieved)."""
+    in_scope_clauses: set[str] | None = None
+    if retrieved_ids is not None:
+        in_scope_clauses = {
+            cid for c in all_chunks if c.chunk_id in retrieved_ids
+            for cid in c.clause_ids
+        }
     obligation_ids = {
         cid for c in all_chunks if c.obligation_flag for cid in c.clause_ids
     }
@@ -217,25 +229,35 @@ def check_coverage(posters: list[PosterContent], all_chunks: list[Chunk]) -> Ver
             addressed[cid] = state
 
     findings: list[Finding] = []
-    dropped = []
+    silent, explicit, out_of_scope = [], [], []
     for cid in sorted(obligation_ids):
         state = addressed.get(cid)
-        if state is None:
-            findings.append(Finding(
-                "blocker", f"obligation clause {cid} missing from coverage_map entirely",
-            ))
-            dropped.append(cid)
-        elif state == "omitted":
-            findings.append(Finding(
-                "blocker", f"obligation clause {cid} marked omitted from the campaign",
-            ))
-            dropped.append(cid)
-    if dropped:
+        scoped = in_scope_clauses is None or cid in in_scope_clauses
+        if state in ("covered", "partial", "not_applicable"):
+            continue
+        if not scoped:
+            out_of_scope.append(cid)
+        elif state is None:
+            silent.append(cid)
+        else:  # "omitted" — explicit, surfaced
+            explicit.append(cid)
+
+    for cid in silent:
+        findings.append(Finding(
+            "blocker", f"obligation clause {cid} missing from coverage_map entirely",
+        ))
+    for cid in explicit:
+        findings.append(Finding(
+            "major", f"obligation clause {cid} explicitly omitted from this poster",
+        ))
+    if explicit or out_of_scope:
+        uncarried = explicit + out_of_scope
         findings.append(Finding(
             "major",
-            f"recommend additional poster(s) to carry uncovered obligations: {', '.join(dropped)}",
+            "one poster cannot carry the whole policy — recommend additional "
+            f"poster(s) (campaign mode) for obligations: {', '.join(uncarried)}",
         ))
-    return Verdict("coverage", "reject" if dropped else "pass", findings)
+    return Verdict("coverage", "reject" if silent else "pass", findings)
 
 
 # -- Editorial pass: Compliance (BLOCKING) + Tone (REVISE-ONLY), one call ----
